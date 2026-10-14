@@ -30,7 +30,10 @@ esbuild.buildSync({
 
 for (const f of ['app.js', 'style.css', 'logo.png', 'manifest.webmanifest']) fs.copyFileSync(path.join(pub, f), path.join(out, f));
 fs.copyFileSync(path.join(__dirname, 'node_modules', 'sql.js', 'dist', 'sql-wasm-browser.wasm'), path.join(out, 'sql-wasm-browser.wasm'));
-fs.copyFileSync(path.join(__dirname, 'index.html'), path.join(out, 'index.html'));
+// cache-busting: GitHub Pages lets browsers keep files for ~10 minutes, so every build gets a fresh version number
+const ver = Date.now().toString(36);
+fs.writeFileSync(path.join(out, 'index.html'), fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8')
+  .replace('href="style.css"', `href="style.css?v=${ver}"`).replace('src="demo.js"', `src="demo.js?v=${ver}"`).replace('src="app.js"', `src="app.js?v=${ver}"`));
 fs.writeFileSync(path.join(root, '.nojekyll'), '');
 fs.writeFileSync(path.join(root, 'index.html'), '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=demo/"><title>GRV Dairy</title><a href="demo/">Open the GRV Dairy demo</a>\n');
 console.log('Demo built in', out);
