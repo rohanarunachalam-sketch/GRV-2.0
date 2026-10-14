@@ -252,7 +252,7 @@ pages.bills = async (v) => {
     openForm({ title: `Payment — ${r.name}`, intro, saveLabel: 'OK', fields: [
       { key: 'date', label: 'Date', type: 'date', default: monthDefaultDate(), required: true },
       { key: 'customer_id', hidden: true, default: r.id }, { key: 'bill_month', hidden: true, default: S.month },
-      { key: 'amount', label: 'Amount received (₹)', type: 'number', placeholder: 'Type the amount', required: true },
+      { key: 'amount', label: 'Amount received (₹) — filled with the full pending amount; change it if they pay a different amount', type: 'number', default: Math.max(r.pending, 0) || '', placeholder: 'Type the amount', required: true },
       { key: 'mode', label: 'Payment mode', type: 'select', options: S.lists.modes }, { key: 'remarks', label: 'Remarks', type: 'text' }],
     onSave: async (d) => { await api('payments', 'POST', d); toast('Payment saved'); render(); } });
   });
