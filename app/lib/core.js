@@ -22,7 +22,7 @@ const get = async (sql, args = []) => (await all(sql, args))[0];
 const run = async (sql, args = []) => { const r = await client.execute({ sql, args }); return { changes: r.rowsAffected, id: r.lastInsertRowid == null ? null : Number(r.lastInsertRowid) }; };
 
 const SCHEMA = `
-CREATE TABLE IF NOT EXISTS customers(id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT DEFAULT '', am REAL DEFAULT 0, pm REAL DEFAULT 0, price REAL DEFAULT 0, status TEXT DEFAULT 'Active');
+CREATE TABLE IF NOT EXISTS customers(id TEXT PRIMARY KEY, name TEXT NOT NULL, bill_name TEXT DEFAULT '', phone TEXT DEFAULT '', am REAL DEFAULT 0, pm REAL DEFAULT 0, price REAL DEFAULT 0, status TEXT DEFAULT 'Active');
 CREATE TABLE IF NOT EXISTS deliveries(date TEXT, customer_id TEXT, session TEXT, qty REAL, PRIMARY KEY(date, customer_id, session));
 CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, customer_id TEXT, bill_month TEXT, amount REAL, mode TEXT, status TEXT DEFAULT '', remarks TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS income(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, type TEXT, source TEXT DEFAULT '', description TEXT DEFAULT '', amount REAL, mode TEXT DEFAULT '', remarks TEXT DEFAULT '');
@@ -45,6 +45,7 @@ let ready;
 const init = () => ready || (ready = (async () => {
   await client.executeMultiple(SCHEMA);
   try { await client.execute('ALTER TABLE sessions ADD COLUMN cid TEXT'); } catch { /* already there */ }
+  try { await client.execute("ALTER TABLE customers ADD COLUMN bill_name TEXT DEFAULT ''"); } catch { /* already there */ }
   if ((await get('SELECT COUNT(*) n FROM users')).n === 0) {
     let creds = { admin: process.env.ADMIN_PASSWORD, delivery: process.env.DELIVERY_PASSWORD };
     if (!creds.admin || !creds.delivery) {
@@ -121,7 +122,7 @@ async function bills(month) {
     let am = 0, pm = 0;
     for (let d = 1; d <= n; d++) { const ds = dateStr(month, d); am += eff(c, ds, 'AM'); pm += eff(c, ds, 'PM'); }
     const total = am + pm, amount = r2(total * c.price), p = paid.get(c.id) || 0, pending = r2(amount - p);
-    return { id: c.id, name: c.name, phone: c.phone, status: c.status, am: r2(am), pm: r2(pm), total: r2(total), price: c.price, amount, paid: r2(p), pending,
+    return { id: c.id, name: c.name, bill_name: c.bill_name || '', phone: c.phone, status: c.status, am: r2(am), pm: r2(pm), total: r2(total), price: c.price, amount, paid: r2(p), pending,
       pay_status: amount === 0 && p === 0 ? '-' : pending <= 0 ? 'Paid' : p > 0 ? 'Part Paid' : 'Pending' };
   });
 }
@@ -185,7 +186,7 @@ const resources = {
 };
 const masters = {
   customers: { table: 'customers', prefix: 'GRV', pad: 3, order: 'id',
-    fields: { name: (v) => { need((v || '').trim(), 'name required'); return v.trim(); }, phone: (v) => v || '', am: (v) => num(v || 0, 'AM qty'), pm: (v) => num(v || 0, 'PM qty'), price: (v) => num(v || 0, 'price'), status: (v) => (v === 'Inactive' ? 'Inactive' : 'Active') } },
+    fields: { name: (v) => { need((v || '').trim(), 'name required'); return v.trim(); }, bill_name: (v) => String(v || '').trim().slice(0, 60), phone: (v) => v || '', am: (v) => num(v || 0, 'AM qty'), pm: (v) => num(v || 0, 'PM qty'), price: (v) => num(v || 0, 'price'), status: (v) => (v === 'Inactive' ? 'Inactive' : 'Active') } },
   cows: { table: 'cows', prefix: 'CW', pad: 3, order: 'id',
     fields: { name: (v) => { need((v || '').trim(), 'name required'); return v.trim(); }, breed: (v) => v || '', lactation: (v) => v || '', calving_date: (v) => v || '', status: (v) => v || 'Active', notes: (v) => v || '' } },
 };
@@ -289,7 +290,7 @@ route('GET', '/api/route', async ({ q, user }) => {
 });
 route('GET', '/api/me', async ({ user }) => {
   const me = { role: user.role, today: today(), yesterday: yesterday() };
-  if (user.role === 'customer') { const c = await get('SELECT id, name FROM customers WHERE id=?', [user.cid]); Object.assign(me, { cid: user.cid, name: c && c.name }); }
+  if (user.role === 'customer') { const c = await get('SELECT id, bill_name FROM customers WHERE id=?', [user.cid]); Object.assign(me, { cid: user.cid, name: c && c.bill_name }); }
   return me;
 });
 route('POST', '/api/logout', async ({ user }) => { await run('DELETE FROM sessions WHERE token=?', [user.token]); return { ok: true, clear: true }; });
@@ -313,6 +314,7 @@ for (const [name, cfg] of Object.entries(masters)) {
   route('PUT', `/api/${name}/([^/]+)`, async ({ body, m }) => {
     need(await exists(cfg.table, m[1]), 'not found');
     const o = await pick(cfg.fields, body);
+    if ('bill_name' in o && body.bill_name === undefined) delete o.bill_name; // an edit that doesn't mention it must not wipe the customer's own name
     await run(`UPDATE ${cfg.table} SET ${Object.keys(o).map((k) => k + '=?').join(',')} WHERE id=?`, [...Object.values(o), m[1]]);
     return { id: m[1], ...o };
   });
@@ -393,6 +395,18 @@ route('PUT', '/api/customers/([^/]+)/password', async ({ body, m }) => { // no p
   return { ok: true };
 });
 
+// ---- cow yield grid: one cell = one cow on one date (blank = no entry)
+route('PUT', '/api/yield-cell', async ({ body }) => {
+  validDate(body.date); need(await exists('cows', body.cow_id), 'unknown cow');
+  const blank = (v) => v === '' || v === null || v === undefined;
+  const am = blank(body.am) ? 0 : num(body.am, 'AM yield'), pm = blank(body.pm) ? 0 : num(body.pm, 'PM yield');
+  const old = await get('SELECT id FROM cow_yield WHERE date=? AND cow_id=?', [body.date, body.cow_id]);
+  if (blank(body.am) && blank(body.pm)) { if (old) await run('DELETE FROM cow_yield WHERE id=?', [old.id]); }
+  else if (old) await run('UPDATE cow_yield SET am=?, pm=? WHERE id=?', [am, pm, old.id]);
+  else await run('INSERT INTO cow_yield(date,cow_id,am,pm,notes) VALUES(?,?,?,?,?)', [body.date, body.cow_id, am, pm, '']);
+  return { ok: true };
+});
+
 // ---- customer portal
 route('GET', '/api/portal', async ({ q, user }) => {
   const cid = user.cid, cutoff = billCutoff();
@@ -408,8 +422,8 @@ route('GET', '/api/portal', async ({ q, user }) => {
   }
   const payments = await all('SELECT date, amount, mode FROM payments WHERE customer_id=? AND bill_month=? ORDER BY date', [cid, month]);
   const paid = payments.reduce((a, x) => a + x.amount, 0), amount = r2((am + pm) * c.price);
-  const skips = (await all("SELECT k.*, ? AS name FROM skips k WHERE customer_id=? AND status='active' AND to_date >= ? ORDER BY from_date", [c.name, cid, today()])).map(skipRow);
-  return { customer: { id: c.id, name: c.name, price: c.price, am: c.am, pm: c.pm }, month, cutoff, update_hour: BILL_HOUR, today: today(), tomorrow: tomorrow(),
+  const skips = (await all("SELECT k.*, ? AS name FROM skips k WHERE customer_id=? AND status='active' AND to_date >= ? ORDER BY from_date", [c.bill_name || '', cid, today()])).map(skipRow);
+  return { customer: { id: c.id, name: c.bill_name || '', price: c.price, am: c.am, pm: c.pm }, needs_name: !c.bill_name, month, cutoff, update_hour: BILL_HOUR, today: today(), tomorrow: tomorrow(),
     days, am: r2(am), pm: r2(pm), total: r2(am + pm), amount, paid: r2(paid), due: r2(amount - paid), payments, skips,
     default_password: !(await get('SELECT 1 x FROM customer_auth WHERE customer_id=?', [cid])) };
 });
@@ -419,6 +433,12 @@ route('PUT', '/api/portal/password', async ({ body, user }) => {
   await setCustomerPassword(user.cid, String(body.password));
   await run("DELETE FROM sessions WHERE role='customer' AND cid=? AND token<>?", [user.cid, user.token]);
   return { ok: true };
+});
+route('PUT', '/api/portal/name', async ({ body, user }) => { // the name that appears on this customer's bill (the admin's own nickname is untouched)
+  const name = String(body.name || '').trim().replace(/\s+/g, ' ');
+  need(name.length >= 2 && name.length <= 60, 'Please enter your name (2 to 60 characters)');
+  await run('UPDATE customers SET bill_name=? WHERE id=?', [name, user.cid]);
+  return { ok: true, name };
 });
 route('POST', '/api/portal/skips', async ({ body, user }) => {
   validDate(body.from); validDate(body.to);

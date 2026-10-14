@@ -26,6 +26,9 @@ async function seed() {
   await run('INSERT INTO skips(customer_id,from_date,to_date,session,note,created,created_by) VALUES(?,?,?,?,?,?,?)', ['GRV002', addDays(t, 1), addDays(t, 3), 'AM', 'Out of town', new Date().toISOString(), 'customer']);
   await run('INSERT INTO expenses(date,category,description,amount,mode,paid_by,remarks) VALUES(?,?,?,?,?,?,?)', [t, 'Cattle Feed', 'Sample feed purchase', 1200, 'Cash', '', '']);
   await run('INSERT INTO cows(id,name,breed,lactation,calving_date,status,notes) VALUES(?,?,?,?,?,?,?)', ['CW001', 'Lakshmi', 'HF cross', 'Lactating', '', 'Active', 'sample']);
+  await run('INSERT INTO cows(id,name,breed,lactation,calving_date,status,notes) VALUES(?,?,?,?,?,?,?)', ['CW002', 'Gowri', 'Jersey', 'Lactating', '', 'Active', 'sample']);
+  for (const [d, c, am, pm] of [[addDays(t, -1), 'CW001', 6.5, 5], [addDays(t, -1), 'CW002', 8, 6.5], [t, 'CW001', 6, 0]])
+    await run('INSERT INTO cow_yield(date,cow_id,am,pm,notes) VALUES(?,?,?,?,?)', [d, c, am, pm, '']);
 }
 
 const ready = init().then(seed);

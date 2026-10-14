@@ -7,7 +7,7 @@ const h = (tag, attrs = {}, ...kids) => {
     if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
     else if (v === true) e.setAttribute(k, ''); else if (v !== false && v != null) e.setAttribute(k, v);
   }
-  for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(k));
+  for (const k of kids.flat(Infinity)) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(k));
   return e;
 };
 const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
@@ -38,28 +38,35 @@ monthInput.value = S.month;
 monthInput.addEventListener('change', () => { if (!monthInput.value) return; S.month = monthInput.value; localStorage.setItem('grv.month', S.month); render(); });
 const monthDefaultDate = () => (today().startsWith(S.month) ? today() : S.month + '-01');
 
+// A password box with a Show / Hide button so people can check what they typed.
+function pwBox(input) {
+  const btn = h('button', { type: 'button', class: 'eye', onclick: () => { const show = input.type === 'password'; input.type = show ? 'text' : 'password'; btn.textContent = show ? 'Hide' : 'Show'; } }, 'Show');
+  return h('div', { class: 'pwbox' }, input, btn);
+}
+
 // ---------- modal form ----------
-function openForm({ title, fields, values = {}, onSave }) {
+function openForm({ title, fields, values = {}, onSave, intro, saveLabel = 'Save' }) {
   const dlg = $('#dlg'); dlg.innerHTML = '';
   const inputs = {};
-  const form = h('form', { class: 'form', method: 'dialog' }, h('h1', {}, title),
+  const form = h('form', { class: 'form', method: 'dialog' }, h('h1', {}, title), intro || null,
     fields.map((f) => {
       let el;
       const v = values[f.key] ?? f.default ?? '';
+      if (f.hidden) { inputs[f.key] = { value: v }; return null; }
       if (f.type === 'select') el = h('select', {}, (f.options || []).map((o) => { const [val, lab] = Array.isArray(o) ? o : [o, o]; return h('option', { value: val, selected: String(val) === String(v) }, lab); }));
       else if (f.type === 'textarea') { el = h('textarea', { rows: 2 }); el.value = v; }
       else { el = h('input', { type: f.type || 'text', step: f.type === 'number' ? 'any' : null, min: f.type === 'number' ? 0 : null, value: v, required: f.required, autocomplete: 'off' }); }
       inputs[f.key] = el;
       return h('label', {}, f.label, el);
     }),
-    h('div', { class: 'acts' }, h('button', { type: 'button', onclick: () => dlg.close() }, 'Cancel'), h('button', { class: 'pri', type: 'submit' }, 'Save')));
+    h('div', { class: 'acts' }, h('button', { type: 'button', onclick: () => dlg.close() }, 'Cancel'), h('button', { class: 'pri', type: 'submit' }, saveLabel)));
   form.addEventListener('submit', guard(async (e) => {
     e.preventDefault();
     const data = {}; for (const f of fields) data[f.key] = inputs[f.key].value;
     await onSave(data); dlg.close();
   }));
   dlg.append(form); dlg.showModal();
-  const first = Object.values(inputs)[0]; if (first) first.focus();
+  const first = Object.values(inputs).find((i) => i.focus); if (first) first.focus();
 }
 
 // ---------- generic table ----------
@@ -228,13 +235,27 @@ pages.bills = async (v) => {
     holder.innerHTML = '';
     const rs = rows.filter((r) => !filter || (r.name + r.id).toLowerCase().includes(filter.toLowerCase()));
     holder.append(table([
-      { label: 'ID', key: 'id' }, { label: 'Customer', key: 'name' }, { label: 'Phone', key: 'phone' }, { label: 'AM L', num: 1, render: (r) => lit(r.am) }, { label: 'PM L', num: 1, render: (r) => lit(r.pm) },
+      { label: 'ID', key: 'id' }, { label: 'Customer', render: (r) => h('span', {}, r.name, r.bill_name ? h('div', { class: 'tag' }, 'Bill name: ' + r.bill_name) : null) }, { label: 'Phone', key: 'phone' }, { label: 'AM L', num: 1, render: (r) => lit(r.am) }, { label: 'PM L', num: 1, render: (r) => lit(r.pm) },
       { label: 'Total L', num: 1, render: (r) => lit(r.total) }, { label: 'Price/L', num: 1, render: (r) => lit(r.price) }, { label: 'Bill', num: 1, render: (r) => inr(r.amount) },
       { label: 'Paid', num: 1, render: (r) => inr(r.paid) }, { label: 'Pending', num: 1, render: (r) => h('span', { class: r.pending > 0 ? 'bad' : '' }, inr(r.pending)) }, { label: 'Status', render: (r) => pill(r.pay_status) },
-      { label: '', render: (r) => h('span', {}, h('a', { href: `#/bill/${r.id}` }, h('button', { class: 'link' }, 'Bill')), h('button', { class: 'link', onclick: () => payFor(r) }, '+ Payment')) },
+      { label: '', render: (r) => h('span', {}, h('a', { href: `#/bill/${r.id}` }, h('button', { class: 'link' }, 'Bill')), h('button', { class: 'link', onclick: () => payFor(r) }, 'Payment')) },
     ], rs, { foot: ['', 'Total', '', lit(sum('am')), lit(sum('pm')), lit(sum('total')), '', inr(sum('amount')), inr(sum('paid')), inr(sum('pending')), '', ''] }));
   };
-  const payFor = (r) => openForm({ title: `Payment — ${r.name}`, fields: paymentFields(r.id, Math.max(r.pending, 0)), onSave: async (d) => { await api('payments', 'POST', d); toast('Payment saved'); render(); } });
+  // Payment dialog: shows what the customer bought and owes; the amount is pre-filled with the pending balance but can be changed.
+  const payFor = guard(async (r) => {
+    const paid = (await api('payments?month=' + S.month)).filter((p) => p.customer_id === r.id);
+    const line = (l, val, cls = '') => h('div', { class: 'payrow ' + cls }, h('span', {}, l), h('b', {}, val));
+    const intro = h('div', { class: 'payinfo' }, h('div', { class: 'tag' }, `${r.id} · ${monthLabel(S.month)}`),
+      line('Total milk bought', lit(r.total) + ' L'), line('Bill amount', inr(r.amount)), line('Already paid', inr(r.paid)), line('Pending', inr(Math.max(r.pending, 0)), 'big'),
+      paid.length ? h('div', { class: 'paid-list' }, h('div', { class: 'tag' }, 'Payments received'), paid.map((p) => h('div', { class: 'payrow' }, h('span', {}, `${p.date}${p.mode ? ' · ' + p.mode : ''}`),
+        h('span', {}, h('b', {}, inr(p.amount)), h('button', { type: 'button', class: 'link del', onclick: guard(async () => { if (!confirm(`Delete this ${inr(p.amount)} payment?`)) return; await api('payments/' + p.id, 'DELETE'); toast('Payment deleted'); $('#dlg').close(); render(); }) }, 'Delete'))))) : null);
+    openForm({ title: `Payment — ${r.name}`, intro, saveLabel: 'Save payment', fields: [
+      { key: 'date', label: 'Date', type: 'date', default: monthDefaultDate(), required: true },
+      { key: 'customer_id', hidden: true, default: r.id }, { key: 'bill_month', hidden: true, default: S.month },
+      { key: 'amount', label: 'Amount received (₹) — change it if they pay a different amount', type: 'number', default: Math.max(r.pending, 0) || '', required: true },
+      { key: 'mode', label: 'Payment mode', type: 'select', options: S.lists.modes }, { key: 'remarks', label: 'Remarks', type: 'text' }],
+    onSave: async (d) => { await api('payments', 'POST', d); toast('Payment saved'); render(); } });
+  });
   v.append(h('h1', {}, 'Monthly Bills'), h('p', { class: 'sub' }, `${monthLabel(S.month)} — built from actual daily AM/PM quantities.`),
     h('div', { class: 'bar' }, h('input', { type: 'search', placeholder: 'Search customer…', oninput: (e) => { filter = e.target.value; draw(); } }), h('span', { class: 'grow' }),
       h('a', { href: '#/bill/all' }, h('button', {}, 'All bills')), h('a', { href: 'api/bills.csv?month=' + S.month }, h('button', {}, 'Download CSV')), h('button', { onclick: () => print() }, 'Print')), holder);
@@ -249,7 +270,7 @@ function invoice(b) {
   const row = (l, val, cls = '') => h('tr', { class: cls }, h('td', {}, l), h('td', { class: 'n' }, val));
   return h('section', { class: 'invoice' },
     h('div', { class: 'inv-head' }, h('img', { src: 'logo.png', alt: 'GRV Dairy' }), h('div', { class: 'inv-title' }, h('h1', {}, 'MILK BILL'), h('div', {}, 'Bill no: ', h('b', {}, b.bill_no)), h('div', {}, 'Month: ', h('b', {}, monthLabel(b.month))), h('div', {}, 'Date: ', h('b', {}, new Date().toLocaleDateString('en-IN'))))),
-    h('div', { class: 'inv-to' }, h('div', { class: 'tag' }, 'Bill to'), h('b', { style: 'font-size:18px' }, b.name), h('div', {}, b.id + (b.phone ? ' · ' + b.phone : ''))),
+    h('div', { class: 'inv-to' }, h('div', { class: 'tag' }, 'Bill to'), h('b', { style: 'font-size:18px' }, b.bill_name || b.name), h('div', {}, b.id + (b.phone ? ' · ' + b.phone : ''))),
     h('div', { class: 'inv-cols' }, dayTable(b.days.slice(0, half)), dayTable(b.days.slice(half))),
     h('table', { class: 'inv-sum' }, h('tbody', {}, row('Morning (AM) litres', lit(b.am) + ' L'), row('Evening (PM) litres', lit(b.pm) + ' L'), row('Total litres', lit(b.total) + ' L', 'b'), row('Rate per litre', inr(b.price)),
       row('Bill amount', inr(b.amount), 'b'), ...b.payments.map((p) => row(`Paid ${p.date}${p.mode ? ' (' + p.mode + ')' : ''}`, '− ' + inr(p.amount))), row(b.pending > 0 ? 'Amount due' : 'Balance', inr(b.pending), 'due ' + (b.pending > 0 ? 'bad' : 'good')))),
@@ -257,7 +278,7 @@ function invoice(b) {
 }
 const waLink = (b) => {
   let ph = (b.phone || '').replace(/\D/g, ''); if (ph.length === 10) ph = '91' + ph;
-  const t = `GRV Dairy — ${monthLabel(b.month)} milk bill\n${b.name}\n${lit(b.total)} L × ${inr(b.price)} = ${inr(b.amount)}\n` + (b.paid ? `Paid: ${inr(b.paid)}\n` : '') + (b.pending > 0 ? `Amount due: ${inr(b.pending)}` : 'No balance due. Thank you!');
+  const t = `GRV Dairy — ${monthLabel(b.month)} milk bill\n${b.bill_name || b.name}\n${lit(b.total)} L × ${inr(b.price)} = ${inr(b.amount)}\n` + (b.paid ? `Paid: ${inr(b.paid)}\n` : '') + (b.pending > 0 ? `Amount due: ${inr(b.pending)}` : 'No balance due. Thank you!');
   return `https://wa.me/${ph}?text=${encodeURIComponent(t)}`;
 };
 pages.bill = async (v, arg) => {
@@ -275,14 +296,6 @@ let customersCache = null;
 const loadCustomers = async () => (customersCache = await api('customers'));
 const custName = (id) => (customersCache.find((c) => c.id === id) || {}).name || id;
 
-const paymentFields = (cid, amount) => [
-  { key: 'date', label: 'Date', type: 'date', default: monthDefaultDate(), required: true },
-  { key: 'customer_id', label: 'Customer', type: 'select', default: cid, options: customersCache.map((c) => [c.id, `${c.id} — ${c.name}`]) },
-  { key: 'bill_month', label: 'Bill month', type: 'month', default: S.month, required: true },
-  { key: 'amount', label: 'Amount (₹)', type: 'number', default: amount || '', required: true },
-  { key: 'mode', label: 'Payment mode', type: 'select', options: S.lists.modes },
-  { key: 'status', label: 'Status', type: 'text' }, { key: 'remarks', label: 'Remarks', type: 'text' },
-];
 
 function crud({ title, sub, resource, cols, fields, monthly = true, total, master, idKey = 'id', extraBar, rowExtra }) {
   return async (v) => {
@@ -306,19 +319,13 @@ function crud({ title, sub, resource, cols, fields, monthly = true, total, maste
 const sumRow = (len, idx, val) => Array.from({ length: len }, (_, i) => (i === idx ? val : i === 0 ? 'Total' : ''));
 
 pages.customers = crud({ title: 'Customer', sub: 'Master list — AM/PM defaults and price used for daily delivery and billing.', resource: 'customers', monthly: false, master: true,
-  fields: () => [{ key: 'name', label: 'Name', required: true }, { key: 'phone', label: 'Phone' }, { key: 'am', label: 'AM default qty (L)', type: 'number', default: 0 }, { key: 'pm', label: 'PM default qty (L)', type: 'number', default: 0 },
+  fields: () => [{ key: 'name', label: 'Nickname (only you see this)', required: true }, { key: 'bill_name', label: "Name on bill (the customer's own — they can also set it)" }, { key: 'phone', label: 'Phone' }, { key: 'am', label: 'AM default qty (L)', type: 'number', default: 0 }, { key: 'pm', label: 'PM default qty (L)', type: 'number', default: 0 },
     { key: 'price', label: 'Price per L (₹)', type: 'number', default: 55 }, { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Inactive'] }],
-  cols: [{ label: 'ID', key: 'id' }, { label: 'Name', key: 'name' }, { label: 'Phone', key: 'phone' }, { label: 'AM (L)', num: 1, render: (r) => lit(r.am) }, { label: 'PM (L)', num: 1, render: (r) => lit(r.pm) },
+  cols: [{ label: 'ID', key: 'id' }, { label: 'Nickname', key: 'name' }, { label: 'Name on bill', render: (r) => r.bill_name || h('span', { class: 'mute' }, '—') }, { label: 'Phone', key: 'phone' }, { label: 'AM (L)', num: 1, render: (r) => lit(r.am) }, { label: 'PM (L)', num: 1, render: (r) => lit(r.pm) },
     { label: 'Total (L)', num: 1, render: (r) => lit(r.am + r.pm) }, { label: 'Price/L', num: 1, render: (r) => inr(r.price) }, { label: 'Status', render: (r) => pill(r.status) }],
-  total: (rs, n) => sumRow(n, 5, lit(rs.reduce((a, r) => a + r.am + r.pm, 0))),
+  total: (rs, n) => sumRow(n, 6, lit(rs.reduce((a, r) => a + r.am + r.pm, 0))),
   rowExtra: (r) => h('button', { class: 'link', onclick: () => customerLogin(r) }, 'Login'),
 });
-
-pages.payments = crud({ title: 'Payment', sub: 'Customer bill collections. Don\'t repeat these under Income.', resource: 'payments',
-  fields: () => paymentFields(),
-  cols: [{ label: 'Date', key: 'date' }, { label: 'Customer', render: (r) => `${r.customer_id} — ${custName(r.customer_id)}` }, { label: 'Bill month', key: 'bill_month' }, { label: 'Amount', num: 1, render: (r) => inr(r.amount) }, { label: 'Mode', key: 'mode' }, { label: 'Status', key: 'status' }, { label: 'Remarks', key: 'remarks' }],
-  total: (rs, n) => sumRow(n, 3, inr(rs.reduce((a, r) => a + r.amount, 0))) });
-// payments are listed by bill month; the list endpoint filters on bill_month
 
 pages.income = crud({ title: 'Income', sub: 'Non-bill income such as curd, ghee or egg sales.', resource: 'income',
   fields: () => [{ key: 'date', label: 'Date', type: 'date', default: monthDefaultDate(), required: true }, { key: 'type', label: 'Income type', type: 'select', options: S.lists.income_types }, { key: 'source', label: 'Customer / source' },
@@ -337,15 +344,57 @@ pages.cows = crud({ title: 'Cow', sub: 'Cow master list.', resource: 'cows', mon
     { key: 'calving_date', label: 'Calving date', type: 'date' }, { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Sold', 'Deceased'] }, { key: 'notes', label: 'Notes', type: 'textarea' }],
   cols: [{ label: 'ID', key: 'id' }, { label: 'Name', key: 'name' }, { label: 'Breed', key: 'breed' }, { label: 'Lactation', key: 'lactation' }, { label: 'Calving', key: 'calving_date' }, { label: 'Status', key: 'status' }, { label: 'Notes', key: 'notes' }] });
 
+// Cow yield as a grid: dates down the side, one pair of columns (AM / PM) per cow. Type straight into a cell; it saves when you leave it.
 pages.yield = async (v) => {
-  const cows = await api('cows');
-  const nameOf = (id) => (cows.find((c) => c.id === id) || {}).name || id;
-  if (!cows.length) return v.append(h('h1', {}, 'Cow Yield'), h('p', { class: 'sub' }, 'Add cows in the Cows tab first.'));
-  const f = () => [{ key: 'date', label: 'Date', type: 'date', default: monthDefaultDate(), required: true }, { key: 'cow_id', label: 'Cow', type: 'select', options: cows.map((c) => [c.id, `${c.id} — ${c.name}`]) },
-    { key: 'am', label: 'AM yield (L)', type: 'number', default: 0 }, { key: 'pm', label: 'PM yield (L)', type: 'number', default: 0 }, { key: 'notes', label: 'Notes' }];
-  return crud({ title: 'Cow Yield', sub: 'Daily milk production per cow.', resource: 'cow_yield', fields: f,
-    cols: [{ label: 'Date', key: 'date' }, { label: 'Cow', render: (r) => `${r.cow_id} — ${nameOf(r.cow_id)}` }, { label: 'AM (L)', num: 1, render: (r) => lit(r.am) }, { label: 'PM (L)', num: 1, render: (r) => lit(r.pm) }, { label: 'Total (L)', num: 1, render: (r) => lit(r.am + r.pm) }, { label: 'Notes', key: 'notes' }],
-    total: (rs, n) => ['Total', '', lit(rs.reduce((a, r) => a + r.am, 0)), lit(rs.reduce((a, r) => a + r.pm, 0)), lit(rs.reduce((a, r) => a + r.am + r.pm, 0)), '', ''].slice(0, n) })(v);
+  const [cows, rows] = await Promise.all([api('cows'), api('cow_yield?month=' + S.month)]);
+  const [yy, mm] = S.month.split('-').map(Number), n = new Date(yy, mm, 0).getDate();
+  const dayStr = (d) => `${S.month}-${pad(d)}`;
+  const data = new Map(rows.map((r) => [`${r.cow_id}|${r.date}`, { am: r.am, pm: r.pm }]));
+  const shown = cows.filter((c) => c.status === 'Active' || rows.some((r) => r.cow_id === c.id));
+  v.append(h('h1', {}, 'Cow Yield'), h('p', { class: 'sub' }, `${monthLabel(S.month)} — litres per cow per day. Leave a cell empty if there was no milking.`));
+  if (!shown.length) return v.append(h('p', { class: 'mute' }, 'No cows yet. '), h('a', { href: '#/cows' }, h('button', { class: 'pri' }, 'Add cows')));
+  v.append(h('div', { class: 'bar' }, h('a', { href: '#/cows' }, h('button', {}, 'Manage cows')), h('span', { class: 'grow' })));
+
+  const num = (x) => Number(x) || 0;
+  const dayTot = {}, cowTot = {};
+  const sumDay = (d) => shown.reduce((a, c) => { const r = data.get(`${c.id}|${dayStr(d)}`); return a + (r ? r.am + r.pm : 0); }, 0);
+  const refresh = (d) => {
+    dayTot[d].textContent = sumDay(d) ? lit(sumDay(d)) : '–';
+    let all = 0;
+    for (const c of shown) {
+      let am = 0, pm = 0;
+      for (let k = 1; k <= n; k++) { const r = data.get(`${c.id}|${dayStr(k)}`); if (r) { am += r.am; pm += r.pm; } }
+      cowTot[c.id].am.textContent = lit(am); cowTot[c.id].pm.textContent = lit(pm); all += am + pm;
+    }
+    cowTot.all.textContent = lit(all);
+  };
+  const cellPair = (c, d) => {
+    const key = `${c.id}|${dayStr(d)}`, r = data.get(key);
+    const mk = (which) => h('input', { class: 'q', type: 'number', step: 'any', min: 0, inputmode: 'decimal', 'aria-label': `${c.name} ${which} ${dayStr(d)}`, value: r && r[which] ? r[which] : '' });
+    const a = mk('am'), p = mk('pm');
+    const save = guard(async () => {
+      if ((a.value !== '' && !(Number(a.value) >= 0)) || (p.value !== '' && !(Number(p.value) >= 0))) { toast('Enter a number ≥ 0', true); return; }
+      await api('yield-cell', 'PUT', { date: dayStr(d), cow_id: c.id, am: a.value, pm: p.value });
+      if (a.value === '' && p.value === '') data.delete(key); else data.set(key, { am: num(a.value), pm: num(p.value) });
+      refresh(d);
+    });
+    a.addEventListener('change', save); p.addEventListener('change', save);
+    return [h('td', { class: 'gridcell' }, a), h('td', { class: 'gridcell' }, p)];
+  };
+  const t = today();
+  const body = [];
+  for (let d = 1; d <= n; d++) {
+    dayTot[d] = h('td', { class: 'n' });
+    body.push(h('tr', { class: dayStr(d) === t ? 'today' : '' }, h('td', { class: 'stick' }, dayLabel(dayStr(d))), shown.map((c) => cellPair(c, d)), dayTot[d]));
+  }
+  cowTot.all = h('td', { class: 'n' });
+  const foot = h('tr', {}, h('td', { class: 'stick' }, 'Total'), shown.map((c) => { cowTot[c.id] = { am: h('td', { class: 'n' }), pm: h('td', { class: 'n' }) }; return [cowTot[c.id].am, cowTot[c.id].pm]; }), cowTot.all);
+  v.append(h('div', { class: 'tablewrap' }, h('table', { class: 'ygrid' },
+    h('thead', {}, h('tr', {}, h('th', { rowspan: 2, class: 'stick' }, 'Date'), shown.map((c) => h('th', { colspan: 2, class: 'ycow', title: c.breed || '' }, c.name)), h('th', { rowspan: 2, class: 'n' }, 'Day total')),
+      h('tr', {}, shown.map(() => [h('th', { class: 'n sub2' }, 'AM'), h('th', { class: 'n sub2' }, 'PM')]))),
+    h('tbody', {}, body), h('tfoot', {}, foot))));
+  for (let d = 1; d <= n; d++) refresh(d);
+  const todayRow = $('tr.today'); if (todayRow) todayRow.scrollIntoView({ block: 'center' });
 };
 
 pages.daily = async (v) => {
@@ -436,9 +485,15 @@ const P = { month: null, tab: 'bill' };
 pages.portal = async (v) => {
   const d = await api('portal' + (P.month ? '?month=' + P.month : ''));
   P.month = d.month;
+  const nameForm = (first) => {
+    const i = h('input', { type: 'text', placeholder: 'Your name', maxlength: 60, required: true, value: d.customer.name, autocomplete: 'name' });
+    return h('form', { class: 'form card', style: first ? 'border-color:var(--brand);margin-bottom:12px' : '', onsubmit: guard(async (e) => { e.preventDefault(); await api('portal/name', 'PUT', { name: i.value }); toast('Name saved'); again(); }) },
+      h('h2', { style: 'margin-top:0' }, first ? 'Welcome! What is your name?' : 'Name on my bill'), h('p', { class: 'tag' }, 'This is the name printed on your milk bill. You can change it any time.'),
+      h('label', {}, 'Your name', i), h('button', { class: 'pri', type: 'submit' }, 'Save name'));
+  };
   const again = () => { v.innerHTML = ''; pages.portal(v).catch((e) => v.append(h('p', { class: 'bad' }, e.message))); };
   const tabs = h('div', { class: 'seg' }, [['bill', 'My bill'], ['skip', 'No milk'], ['account', 'Account']].map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
-  v.append(h('div', { class: 'who-card' }, h('div', { class: 'avatar' }, d.customer.name.trim()[0]?.toUpperCase() || '?'), h('div', {}, h('h1', {}, d.customer.name), h('div', { class: 'tag' }, `Customer ${d.customer.id}`))), d.default_password ? h('div', { class: 'card warn', style: 'margin-bottom:10px' }, 'Your password is your phone number. You can change it in the Account tab.') : null, h('div', { class: 'bar' }, tabs));
+  v.append(h('div', { class: 'who-card' }, h('div', { class: 'avatar' }, (d.customer.name || d.customer.id).trim()[0]?.toUpperCase() || '?'), h('div', {}, h('h1', {}, d.customer.name || 'Welcome'), h('div', { class: 'tag' }, `Customer ${d.customer.id}`))), d.needs_name ? nameForm(true) : null, d.default_password ? h('div', { class: 'card warn', style: 'margin-bottom:10px' }, 'Your password is your phone number. You can change it in the Account tab.') : null, h('div', { class: 'bar' }, tabs));
 
   if (P.tab === 'bill') {
     const upTo = d.cutoff < d.month + '-01' ? null : d.cutoff;
@@ -465,14 +520,14 @@ pages.portal = async (v) => {
         h('div', { class: 'ract' }, h('button', { class: 'abs', onclick: guard(async () => { if (!confirm(k.from <= d.today ? 'Start getting milk again from today?' : 'Cancel this request?')) return; await api('portal/skips/' + k.id, 'DELETE'); toast('Done'); again(); }) }, k.from <= d.today ? 'Resume milk from today' : 'Cancel'))))) : h('p', { class: 'mute' }, 'No active requests.'));
   } else {
     const o = h('input', { type: 'password', autocomplete: 'current-password', required: true }), n1 = h('input', { type: 'password', autocomplete: 'new-password', minlength: 6, required: true }), n2 = h('input', { type: 'password', autocomplete: 'new-password', minlength: 6, required: true });
-    v.append(h('form', { class: 'form card', onsubmit: guard(async (e) => { e.preventDefault(); if (n1.value !== n2.value) return toast('New passwords do not match', true); await api('portal/password', 'PUT', { old: o.value, password: n1.value }); toast('Password changed'); again(); }) },
+    v.append(nameForm(false), h('form', { class: 'form card', style: 'margin-top:12px', onsubmit: guard(async (e) => { e.preventDefault(); if (n1.value !== n2.value) return toast('New passwords do not match', true); await api('portal/password', 'PUT', { old: o.value, password: n1.value }); toast('Password changed'); again(); }) },
       h('h2', { style: 'margin-top:0' }, 'Change password'), h('p', { class: 'tag' }, 'If you forget your password, ask the admin to reset it.'),
-      h('label', {}, 'Current password', o), h('label', {}, 'New password (min 6 characters)', n1), h('label', {}, 'Repeat new password', n2), h('button', { class: 'pri', type: 'submit' }, 'Change password')));
+      h('label', {}, 'Current password', pwBox(o)), h('label', {}, 'New password (min 6 characters)', pwBox(n1)), h('label', {}, 'Repeat new password', pwBox(n2)), h('button', { class: 'pri', type: 'submit' }, 'Change password')));
   }
 };
 
 // ---------- router ----------
-const NAV = [['dashboard', 'Dashboard'], ['delivery', 'Delivery'], ['notices', 'Notices'], ['daily', 'Daily Summary'], ['bills', 'Bills'], ['payments', 'Payments'], ['customers', 'Customers'], ['income', 'Income'], ['expenses', 'Expenses'], ['pnl', 'P&L'], ['cows', 'Cows'], ['yield', 'Cow Yield'], ['settings', 'Settings']];
+const NAV = [['dashboard', 'Dashboard'], ['delivery', 'Delivery'], ['notices', 'Notices'], ['daily', 'Daily Summary'], ['bills', 'Bills'], ['customers', 'Customers'], ['income', 'Income'], ['expenses', 'Expenses'], ['pnl', 'P&L'], ['cows', 'Cows'], ['yield', 'Cow Yield'], ['settings', 'Settings']];
 const DELIVERY_NAV = [['delivery', 'Deliveries'], ['notices', 'Notices']];
 const hdr = $('header');
 
@@ -493,7 +548,7 @@ function showLogin() {
     S.lists = null; S.user = null; render();
   }) }, h('img', { class: 'logo big', src: 'logo.png', alt: 'GRV Dairy' }), h('h1', { style: 'text-align:center;font-size:19px;margin-bottom:2px' }, title),
     h('p', { class: 'tag' }, mode === 'customer' ? 'Fresh milk, delivered daily' : 'GRV Dairy staff'),
-    mode === 'customer' ? h('label', {}, 'Customer ID', id) : null, h('label', {}, 'Password', pw), h('button', { class: 'pri', type: 'submit' }, 'Sign in'));
+    mode === 'customer' ? h('label', {}, 'Customer ID', id) : null, h('label', {}, 'Password', pwBox(pw)), h('button', { class: 'pri', type: 'submit' }, 'Sign in'));
   v.append(form); (mode === 'customer' && !id.value ? id : pw).focus();
 }
 
