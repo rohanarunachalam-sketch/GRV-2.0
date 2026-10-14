@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f7d57">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="logo.png" type="image/png">
+<link rel="apple-touch-icon" href="logo.png">
+<title>GRV Dairy</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header hidden>
+  <button id="menu" aria-label="Menu">☰</button>
+  <div class="brand"><img class="logo" src="logo.png" alt=""> GRV Dairy <span id="who" class="tag"></span></div>
+  <nav id="nav"></nav>
+  <label class="month">Month <input type="month" id="month"></label>
+  <button id="logout">Sign out</button>
+</header>
+<main id="view"></main>
+<div id="toast"></div>
+<dialog id="dlg"></dialog>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+# Runtime data: database, first-run passwords, sessions
+app/data/
+*.db
+*.db-shm
+*.db-wal
+credentials.txt
+
+# Customer data exported from the workbook
+app/seed.json
+*.xlsx
+~$*
+
+# Logs, deps, env, OS junk
+*.log
+node_modules/
+.env
+.env.*
+.vercel/
+.DS_Store
+Thumbs.db
+.claude/
