@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2c9018">
+<link rel="icon" href="logo.png" type="image/png">
+<title>GRV Dairy — Demo</title>
+<link rel="stylesheet" href="style.css">
+<style>
+#demo{background:#0b1410;color:#fff;font:13px/1.5 system-ui,sans-serif;padding:8px 14px;display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center}
+#demo b{color:#7bd45f}#demo a{color:#fff;text-decoration:underline;margin-right:4px}
+#demo button{background:none;border:1px solid #fff;color:#fff;border-radius:6px;padding:2px 10px;font-size:12px;cursor:pointer;min-height:0}
+#demo span.g{flex:1;min-width:240px}
+</style>
+</head>
+<body>
+<div id="demo">
+  <span class="g"><b>DEMO</b> — sample data, stored only in your browser (nothing is shared or sent anywhere).
+  Customer: ID <b>GRV001</b>, password <b>9000000001</b> · Delivery: <b>delivery123</b> · Admin: <b>admin123</b></span>
+  <span>Sign in as: <a href="?as=customer">Customer</a><a href="?as=delivery">Delivery</a><a href="?as=admin">Admin</a></span>
+  <button onclick="__demoReset()">Reset demo</button>
+</div>
+<header hidden>
+  <button id="menu" aria-label="Menu">☰</button>
+  <div class="brand"><img class="logo" src="logo.png" alt=""> GRV Dairy <span id="who" class="tag"></span></div>
+  <nav id="nav"></nav>
+  <label class="month">Month <input type="month" id="month"></label>
+  <button id="logout">Sign out</button>
+</header>
+<main id="view"></main>
+<div id="toast"></div>
+<dialog id="dlg"></dialog>
+<script src="demo.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
