@@ -55,7 +55,7 @@ function openForm({ title, fields, values = {}, onSave, intro, saveLabel = 'Save
       if (f.hidden) { inputs[f.key] = { value: v }; return null; }
       if (f.type === 'select') el = h('select', {}, (f.options || []).map((o) => { const [val, lab] = Array.isArray(o) ? o : [o, o]; return h('option', { value: val, selected: String(val) === String(v) }, lab); }));
       else if (f.type === 'textarea') { el = h('textarea', { rows: 2 }); el.value = v; }
-      else { el = h('input', { type: f.type || 'text', step: f.type === 'number' ? 'any' : null, min: f.type === 'number' ? 0 : null, value: v, required: f.required, autocomplete: 'off' }); }
+      else { el = h('input', { type: f.type || 'text', step: f.type === 'number' ? 'any' : null, min: f.type === 'number' ? 0 : null, value: v, required: f.required, placeholder: f.placeholder, autocomplete: 'off' }); }
       inputs[f.key] = el;
       return h('label', {}, f.label, el);
     }),
@@ -249,10 +249,10 @@ pages.bills = async (v) => {
       line('Total milk bought', lit(r.total) + ' L'), line('Bill amount', inr(r.amount)), line('Already paid', inr(r.paid)), line('Pending', inr(Math.max(r.pending, 0)), 'big'),
       paid.length ? h('div', { class: 'paid-list' }, h('div', { class: 'tag' }, 'Payments received'), paid.map((p) => h('div', { class: 'payrow' }, h('span', {}, `${p.date}${p.mode ? ' · ' + p.mode : ''}`),
         h('span', {}, h('b', {}, inr(p.amount)), h('button', { type: 'button', class: 'link del', onclick: guard(async () => { if (!confirm(`Delete this ${inr(p.amount)} payment?`)) return; await api('payments/' + p.id, 'DELETE'); toast('Payment deleted'); $('#dlg').close(); render(); }) }, 'Delete'))))) : null);
-    openForm({ title: `Payment — ${r.name}`, intro, saveLabel: 'Save payment', fields: [
+    openForm({ title: `Payment — ${r.name}`, intro, saveLabel: 'OK', fields: [
       { key: 'date', label: 'Date', type: 'date', default: monthDefaultDate(), required: true },
       { key: 'customer_id', hidden: true, default: r.id }, { key: 'bill_month', hidden: true, default: S.month },
-      { key: 'amount', label: 'Amount received (₹) — change it if they pay a different amount', type: 'number', default: Math.max(r.pending, 0) || '', required: true },
+      { key: 'amount', label: 'Amount received (₹)', type: 'number', placeholder: 'Type the amount', required: true },
       { key: 'mode', label: 'Payment mode', type: 'select', options: S.lists.modes }, { key: 'remarks', label: 'Remarks', type: 'text' }],
     onSave: async (d) => { await api('payments', 'POST', d); toast('Payment saved'); render(); } });
   });
@@ -273,7 +273,9 @@ function invoice(b) {
     h('div', { class: 'inv-to' }, h('div', { class: 'tag' }, 'Bill to'), h('b', { style: 'font-size:18px' }, b.bill_name || b.name), h('div', {}, b.id + (b.phone ? ' · ' + b.phone : ''))),
     h('div', { class: 'inv-cols' }, dayTable(b.days.slice(0, half)), dayTable(b.days.slice(half))),
     h('table', { class: 'inv-sum' }, h('tbody', {}, row('Morning (AM) litres', lit(b.am) + ' L'), row('Evening (PM) litres', lit(b.pm) + ' L'), row('Total litres', lit(b.total) + ' L', 'b'), row('Rate per litre', inr(b.price)),
-      row('Bill amount', inr(b.amount), 'b'), ...b.payments.map((p) => row(`Paid ${p.date}${p.mode ? ' (' + p.mode + ')' : ''}`, '− ' + inr(p.amount))), row(b.pending > 0 ? 'Amount due' : 'Balance', inr(b.pending), 'due ' + (b.pending > 0 ? 'bad' : 'good')))),
+      ...b.payments.map((p) => row(`Paid on ${new Date(p.date + 'T00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}${p.mode ? ' (' + p.mode + ')' : ''}`, inr(p.amount), 'paid')),
+      b.payments.length ? row(b.pending > 0 ? 'Balance due' : 'Balance', b.pending > 0 ? inr(b.pending) : 'Paid in full', 'bal') : null,
+      row('Total amount', inr(b.amount), 'total'))),
     h('div', { class: 'inv-foot' }, 'Thank you for your business! — GRV Dairy Products'));
 }
 const waLink = (b) => {

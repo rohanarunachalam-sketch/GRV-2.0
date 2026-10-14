@@ -228,3 +228,8 @@ body.customer .bar .seg{width:100%}
 .ygrid th.sub2{text-align:center}
 .ygrid td.n,.ygrid th.n{min-width:84px}
 .ygrid td.gridcell{text-align:center}
+
+/* ---- invoice summary: payments, balance and the closing "Total amount" ---- */
+.inv-sum tr.paid td{color:#1f6d11}
+.inv-sum tr.bal td{font-weight:700;border-top:1px solid #0b1410}
+.inv-sum tr.total td{font-size:18px;font-weight:800;background:#edf7ea;border-top:2px solid #2c9018;border-bottom:2px solid #2c9018;color:#0b1410;padding:8px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
