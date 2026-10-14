@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">GRV Dairy</string>
+    <string name="title_activity_main">GRV Dairy</string>
+    <string name="package_name">com.grvdairy.app</string>
+    <string name="custom_url_scheme">com.grvdairy.app</string>
+</resources>

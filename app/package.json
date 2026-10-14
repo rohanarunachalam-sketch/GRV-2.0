@@ -1,0 +1,14 @@
+{
+  "name": "grv-dairy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GRV Dairy management app",
+  "scripts": {
+    "start": "node server.js",
+    "push-db": "node scripts/push-db.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@libsql/client": "^0.15.0"
+  }
+}

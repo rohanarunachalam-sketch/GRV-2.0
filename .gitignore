@@ -19,3 +19,12 @@ node_modules/
 .DS_Store
 Thumbs.db
 .claude/
+
+# Android build output
+*.apk
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/android/capacitor-cordova-android-plugins/build/
+app/*.jar

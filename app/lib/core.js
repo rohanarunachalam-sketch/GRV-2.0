@@ -1,0 +1,503 @@
+// GRV Dairy — API core shared by the local server (server.js) and the Vercel function (api/index.js).
+// Database: libSQL — a local file by default, or Turso when TURSO_DATABASE_URL is set.
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+const { createClient } = require('@libsql/client');
+
+const ROOT = path.join(__dirname, '..');
+const DATA_DIR = path.join(ROOT, 'data');
+const ON_VERCEL = !!process.env.VERCEL;
+const TZ = process.env.APP_TZ || 'Asia/Kolkata';
+
+let client;
+if (process.env.TURSO_DATABASE_URL) client = createClient({ url: process.env.TURSO_DATABASE_URL, authToken: process.env.TURSO_AUTH_TOKEN });
+else { fs.mkdirSync(DATA_DIR, { recursive: true }); client = createClient({ url: pathToFileURL(path.join(DATA_DIR, 'grv.db')).href }); }
+
+// ---- tiny async db helpers
+const toObjs = (rs) => rs.rows.map((r) => Object.fromEntries(rs.columns.map((c, i) => [c, r[i]])));
+const all = async (sql, args = []) => toObjs(await client.execute({ sql, args }));
+const get = async (sql, args = []) => (await all(sql, args))[0];
+const run = async (sql, args = []) => { const r = await client.execute({ sql, args }); return { changes: r.rowsAffected, id: r.lastInsertRowid == null ? null : Number(r.lastInsertRowid) }; };
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS customers(id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT DEFAULT '', am REAL DEFAULT 0, pm REAL DEFAULT 0, price REAL DEFAULT 0, status TEXT DEFAULT 'Active');
+CREATE TABLE IF NOT EXISTS deliveries(date TEXT, customer_id TEXT, session TEXT, qty REAL, PRIMARY KEY(date, customer_id, session));
+CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, customer_id TEXT, bill_month TEXT, amount REAL, mode TEXT, status TEXT DEFAULT '', remarks TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS income(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, type TEXT, source TEXT DEFAULT '', description TEXT DEFAULT '', amount REAL, mode TEXT DEFAULT '', remarks TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, category TEXT, description TEXT DEFAULT '', amount REAL, mode TEXT DEFAULT '', paid_by TEXT DEFAULT '', remarks TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS cows(id TEXT PRIMARY KEY, name TEXT NOT NULL, breed TEXT DEFAULT '', lactation TEXT DEFAULT '', calving_date TEXT DEFAULT '', status TEXT DEFAULT 'Active', notes TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS cow_yield(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, cow_id TEXT, am REAL DEFAULT 0, pm REAL DEFAULT 0, notes TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS users(role TEXT PRIMARY KEY, salt TEXT, hash TEXT);
+CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, role TEXT, created INTEGER, cid TEXT);
+CREATE TABLE IF NOT EXISTS customer_auth(customer_id TEXT PRIMARY KEY, salt TEXT, hash TEXT);
+CREATE TABLE IF NOT EXISTS skips(id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id TEXT, from_date TEXT, to_date TEXT, session TEXT, note TEXT DEFAULT '', status TEXT DEFAULT 'active', created TEXT, created_by TEXT);
+CREATE TABLE IF NOT EXISTS login_fails(ip TEXT PRIMARY KEY, n INTEGER, until INTEGER);
+CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+`;
+
+// ---- auth helpers
+const hashPw = (pw, salt) => crypto.scryptSync(String(pw), salt, 32).toString('hex');
+const setPassword = (role, pw) => { const salt = crypto.randomBytes(16).toString('hex'); return run('INSERT OR REPLACE INTO users(role,salt,hash) VALUES(?,?,?)', [role, salt, hashPw(pw, salt)]); };
+
+let ready;
+const init = () => ready || (ready = (async () => {
+  await client.executeMultiple(SCHEMA);
+  try { await client.execute('ALTER TABLE sessions ADD COLUMN cid TEXT'); } catch { /* already there */ }
+  if ((await get('SELECT COUNT(*) n FROM users')).n === 0) {
+    let creds = { admin: process.env.ADMIN_PASSWORD, delivery: process.env.DELIVERY_PASSWORD };
+    if (!creds.admin || !creds.delivery) {
+      if (ON_VERCEL) throw new Error('No logins yet: set ADMIN_PASSWORD and DELIVERY_PASSWORD environment variables, then redeploy.');
+      creds = { admin: String(crypto.randomInt(100000, 999999)), delivery: String(crypto.randomInt(100000, 999999)) };
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(path.join(DATA_DIR, 'credentials.txt'), `First-run passwords (change them in Settings, then delete this file)\r\nadmin:    ${creds.admin}\r\ndelivery: ${creds.delivery}\r\n`);
+      console.log('Created accounts - passwords saved in app/data/credentials.txt');
+    }
+    for (const [role, pw] of Object.entries(creds)) await setPassword(role, pw);
+  }
+  const seedFile = path.join(ROOT, 'seed.json');
+  if (!ON_VERCEL && (await get('SELECT COUNT(*) n FROM customers')).n === 0 && fs.existsSync(seedFile)) {
+    const seed = JSON.parse(fs.readFileSync(seedFile, 'utf8'));
+    for (const c of seed.customers) await run('INSERT INTO customers(id,name,phone,am,pm,price,status) VALUES(?,?,?,?,?,?,?)', [c.id, c.name, c.phone, c.am, c.pm, c.price, c.status]);
+    await setSetting('modes', ['Cash', ...seed.lists.modes]);
+    await setSetting('expense_categories', ['Cattle Feed', ...seed.lists.expense_categories]);
+    await setSetting('income_types', ['Milk Sales', ...seed.lists.income_types]);
+    console.log(`Seeded ${seed.customers.length} customers from the workbook.`);
+  }
+})().catch((e) => { ready = null; throw e; }));
+
+const getSetting = async (k, def) => { const r = await get('SELECT value FROM settings WHERE key=?', [k]); return r ? JSON.parse(r.value) : def; };
+const setSetting = (k, v) => run('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)', [k, JSON.stringify(v)]);
+const lists = async () => ({
+  modes: await getSetting('modes', ['Cash', 'GPay', 'Bank', 'Other']),
+  expense_categories: await getSetting('expense_categories', ['Miscellaneous']),
+  income_types: await getSetting('income_types', ['Other Income']),
+});
+
+// ---- helpers
+const daysIn = (month) => { const [y, m] = month.split('-').map(Number); return new Date(y, m, 0).getDate(); };
+const dateStr = (month, d) => `${month}-${String(d).padStart(2, '0')}`;
+const monthEnd = (month) => dateStr(month, daysIn(month));
+const r2 = (n) => Math.round(n * 100) / 100;
+const need = (cond, msg) => { if (!cond) throw Object.assign(new Error(msg), { status: 400 }); };
+const validMonth = (m) => { need(/^\d{4}-(0[1-9]|1[0-2])$/.test(m || ''), 'month must be YYYY-MM'); return m; };
+const validDate = (d) => { need(/^\d{4}-\d{2}-\d{2}$/.test(d || ''), 'date must be YYYY-MM-DD'); return d; };
+const num = (v, name) => { const n = Number(v); need(v !== '' && v != null && Number.isFinite(n) && n >= 0, `${name} must be a non-negative number`); return n; };
+const ymdIn = (ms) => new Date(ms).toLocaleDateString('en-CA', { timeZone: TZ }); // YYYY-MM-DD in the business time zone
+const today = () => ymdIn(Date.now());
+const yesterday = () => ymdIn(Date.now() - 864e5);
+const tomorrow = () => ymdIn(Date.now() + 864e5);
+const hourNow = () => Number(new Date().toLocaleString('en-GB', { timeZone: TZ, hour: 'numeric', hour12: false })) % 24;
+const BILL_HOUR = Number(process.env.BILL_UPDATE_HOUR || 22); // customers see a day's delivery only after this hour (10 pm)
+const billCutoff = () => (hourNow() >= BILL_HOUR ? today() : yesterday()); // last day customers can see
+const addDays = (ds, n) => { const d = new Date(ds + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const sessionsOf = (s) => (s === 'BOTH' ? ['AM', 'PM'] : [s]);
+
+// Effective quantity: explicit entry wins (0 = no delivery); blank = default for Active customers.
+async function monthData(month) {
+  const customers = await all('SELECT * FROM customers ORDER BY id');
+  const ov = new Map();
+  for (const r of await all('SELECT * FROM deliveries WHERE date >= ? AND date <= ?', [dateStr(month, 1), monthEnd(month)])) ov.set(`${r.customer_id}|${r.date}|${r.session}`, r.qty);
+  const n = daysIn(month);
+  // customer "no milk" requests: an explicit delivery entry still wins; otherwise a skipped session counts as 0
+  const skipSet = new Set();
+  for (const k of await all("SELECT * FROM skips WHERE status='active' AND from_date <= ? AND to_date >= ?", [monthEnd(month), dateStr(month, 1)]))
+    for (let d = Math.max(k.from_date < dateStr(month, 1) ? 1 : Number(k.from_date.slice(8)), 1); d <= (k.to_date > monthEnd(month) ? n : Number(k.to_date.slice(8))); d++)
+      for (const s of sessionsOf(k.session)) skipSet.add(`${k.customer_id}|${dateStr(month, d)}|${s}`);
+  const eff = (c, date, s) => {
+    const k = `${c.id}|${date}|${s}`;
+    if (ov.has(k)) return ov.get(k);
+    if (skipSet.has(k)) return 0;
+    return c.status === 'Active' ? (s === 'AM' ? c.am : c.pm) : 0;
+  };
+  return { customers, n, eff, ov, skipSet };
+}
+
+async function bills(month) {
+  const { customers, n, eff } = await monthData(month);
+  const paid = new Map((await all('SELECT customer_id, SUM(amount) t FROM payments WHERE bill_month=? GROUP BY customer_id', [month])).map((r) => [r.customer_id, r.t]));
+  return customers.map((c) => {
+    let am = 0, pm = 0;
+    for (let d = 1; d <= n; d++) { const ds = dateStr(month, d); am += eff(c, ds, 'AM'); pm += eff(c, ds, 'PM'); }
+    const total = am + pm, amount = r2(total * c.price), p = paid.get(c.id) || 0, pending = r2(amount - p);
+    return { id: c.id, name: c.name, phone: c.phone, status: c.status, am: r2(am), pm: r2(pm), total: r2(total), price: c.price, amount, paid: r2(p), pending,
+      pay_status: amount === 0 && p === 0 ? '-' : pending <= 0 ? 'Paid' : p > 0 ? 'Part Paid' : 'Pending' };
+  });
+}
+
+async function daily(month) {
+  const { customers, n, eff } = await monthData(month);
+  const out = [];
+  for (let d = 1; d <= n; d++) {
+    const ds = dateStr(month, d);
+    let am = 0, pm = 0, served = 0, absent = 0, sales = 0;
+    for (const c of customers) for (const s of ['AM', 'PM']) {
+      const q = eff(c, ds, s);
+      if (s === 'AM') am += q; else pm += q;
+      if (q > 0) served++;
+      if (q === 0 && (s === 'AM' ? c.am : c.pm) > 0 && c.status === 'Active') absent++;
+      sales += q * c.price;
+    }
+    out.push({ date: ds, am: r2(am), pm: r2(pm), total: r2(am + pm), served, absent, sales: r2(sales) });
+  }
+  return out;
+}
+
+async function pnl(month) {
+  const sales = r2((await bills(month)).reduce((a, b) => a + b.amount, 0));
+  const range = [dateStr(month, 1), monthEnd(month)];
+  const sum = async (t) => (await get(`SELECT COALESCE(SUM(amount),0) t FROM ${t} WHERE date>=? AND date<=?`, range)).t;
+  const other = r2(await sum('income')), expenses = r2(await sum('expenses'));
+  const byCat = await all('SELECT category, SUM(amount) t FROM expenses WHERE date>=? AND date<=? GROUP BY category ORDER BY t DESC', range);
+  const byType = await all('SELECT type, SUM(amount) t FROM income WHERE date>=? AND date<=? GROUP BY type ORDER BY t DESC', range);
+  return { month, sales, other_income: other, total_income: r2(sales + other), expenses, net: r2(sales + other - expenses), by_category: byCat, by_type: byType };
+}
+
+async function dashboard(month) {
+  const b = await bills(month);
+  const collected = (await get('SELECT COALESCE(SUM(amount),0) t FROM payments WHERE bill_month=?', [month])).t;
+  const p = await pnl(month);
+  const yieldL = (await get('SELECT COALESCE(SUM(am+pm),0) t FROM cow_yield WHERE date>=? AND date<=?', [dateStr(month, 1), monthEnd(month)])).t;
+  return {
+    month, customers: (await get('SELECT COUNT(*) n FROM customers')).n,
+    active: (await get("SELECT COUNT(*) n FROM customers WHERE status='Active'")).n,
+    litres: r2(b.reduce((a, x) => a + x.total, 0)), sales: p.sales, collected: r2(collected),
+    pending: r2(b.reduce((a, x) => a + Math.max(x.pending, 0), 0)),
+    other_income: p.other_income, expenses: p.expenses, net: p.net, yield_litres: r2(yieldL),
+    top_pending: b.filter((x) => x.pending > 0).sort((a, c) => c.pending - a.pending).slice(0, 8),
+    daily: (await daily(month)).map((d) => ({ date: d.date, total: d.total })),
+  };
+}
+
+// ---- generic CRUD resources (validators may be async)
+const exists = (table, id) => get(`SELECT 1 x FROM ${table} WHERE id=?`, [id]);
+const resources = {
+  payments: { table: 'payments', order: 'date DESC, id DESC', month: 'bill_month', monthIsExact: true,
+    fields: { date: validDate, customer_id: async (v) => { need(await exists('customers', v), 'unknown customer'); return v; }, bill_month: validMonth,
+      amount: (v) => { const n = num(v, 'amount'); need(n > 0, 'amount must be > 0'); return n; }, mode: (v) => v || '', status: (v) => v || '', remarks: (v) => v || '' } },
+  income: { table: 'income', order: 'date DESC, id DESC', month: 'date',
+    fields: { date: validDate, type: (v) => { need(v, 'type required'); return v; }, source: (v) => v || '', description: (v) => v || '', amount: (v) => num(v, 'amount'), mode: (v) => v || '', remarks: (v) => v || '' } },
+  expenses: { table: 'expenses', order: 'date DESC, id DESC', month: 'date',
+    fields: { date: validDate, category: (v) => { need(v, 'category required'); return v; }, description: (v) => v || '', amount: (v) => num(v, 'amount'), mode: (v) => v || '', paid_by: (v) => v || '', remarks: (v) => v || '' } },
+  cow_yield: { table: 'cow_yield', order: 'date DESC, id DESC', month: 'date',
+    fields: { date: validDate, cow_id: async (v) => { need(await exists('cows', v), 'unknown cow'); return v; }, am: (v) => num(v || 0, 'AM yield'), pm: (v) => num(v || 0, 'PM yield'), notes: (v) => v || '' } },
+};
+const masters = {
+  customers: { table: 'customers', prefix: 'GRV', pad: 3, order: 'id',
+    fields: { name: (v) => { need((v || '').trim(), 'name required'); return v.trim(); }, phone: (v) => v || '', am: (v) => num(v || 0, 'AM qty'), pm: (v) => num(v || 0, 'PM qty'), price: (v) => num(v || 0, 'price'), status: (v) => (v === 'Inactive' ? 'Inactive' : 'Active') } },
+  cows: { table: 'cows', prefix: 'CW', pad: 3, order: 'id',
+    fields: { name: (v) => { need((v || '').trim(), 'name required'); return v.trim(); }, breed: (v) => v || '', lactation: (v) => v || '', calving_date: (v) => v || '', status: (v) => v || 'Active', notes: (v) => v || '' } },
+};
+
+async function pick(fields, body) {
+  const o = {};
+  for (const [k, fn] of Object.entries(fields)) o[k] = await fn(body[k]);
+  return o;
+}
+async function nextId(table, prefix, pad) {
+  const rows = await all(`SELECT id FROM ${table}`);
+  const max = rows.reduce((m, r) => Math.max(m, parseInt(r.id.slice(prefix.length), 10) || 0), 0);
+  return prefix + String(max + 1).padStart(pad, '0');
+}
+
+// ---- routing
+const routes = [];
+const route = (method, pattern, fn) => routes.push({ method, re: new RegExp('^' + pattern + '$'), fn });
+const DELIVERY_ALLOWED = new Set(['GET /api/me', 'POST /api/logout', 'GET /api/route', 'PUT /api/delivery', 'GET /api/notices']);
+const roleAllows = (role, key) => role === 'admin' || (role === 'delivery' && DELIVERY_ALLOWED.has(key)) ||
+  (role === 'customer' && (['GET /api/me', 'POST /api/logout'].includes(key) || key.split(' ')[1].startsWith('/api/portal')));
+// delivery staff may only touch today's and yesterday's entries
+const checkDeliveryDate = (user, date) => { if (user.role !== 'admin') need(date === today() || date === yesterday(), 'You can only edit today or yesterday'); };
+
+route('GET', '/api/lists', () => lists());
+route('PUT', '/api/lists', async ({ body }) => {
+  for (const k of ['modes', 'expense_categories', 'income_types']) if (Array.isArray(body[k])) {
+    const v = [...new Set(body[k].map((s) => String(s).trim()).filter(Boolean))];
+    need(v.length, `${k} cannot be empty`); await setSetting(k, v);
+  }
+  return lists();
+});
+route('GET', '/api/dashboard', ({ q }) => dashboard(validMonth(q.month)));
+route('GET', '/api/pnl', ({ q }) => pnl(validMonth(q.month)));
+route('GET', '/api/daily', ({ q }) => daily(validMonth(q.month)));
+route('GET', '/api/bills', ({ q }) => bills(validMonth(q.month)));
+route('GET', '/api/bills.csv', async ({ q }) => {
+  const rows = await bills(validMonth(q.month));
+  const head = ['Customer ID', 'Customer Name', 'Phone', 'AM Litres', 'PM Litres', 'Total Litres', 'Price/L', 'Bill Amount', 'Paid', 'Pending', 'Status'];
+  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const csv = [head, ...rows.map((r) => [r.id, r.name, r.phone, r.am, r.pm, r.total, r.price, r.amount, r.paid, r.pending, r.pay_status])].map((r) => r.map(esc).join(',')).join('\r\n');
+  return { __raw: '﻿' + csv, type: 'text/csv; charset=utf-8', filename: `GRV_bills_${q.month}.csv` };
+});
+
+// Printable bill(s): day-by-day quantities plus payments. No id => every customer with milk or payments that month.
+route('GET', '/api/bill', async ({ q }) => {
+  const month = validMonth(q.month);
+  const { customers, n, eff } = await monthData(month);
+  const summary = new Map((await bills(month)).map((b) => [b.id, b]));
+  const out = [];
+  for (const c of customers) {
+    if (q.id && c.id !== q.id) continue;
+    const b = summary.get(c.id);
+    if (!q.id && b.total === 0 && b.paid === 0) continue;
+    const days = [];
+    for (let d = 1; d <= n; d++) { const ds = dateStr(month, d); days.push({ date: ds, am: eff(c, ds, 'AM'), pm: eff(c, ds, 'PM') }); }
+    const payments = await all('SELECT date, amount, mode FROM payments WHERE customer_id=? AND bill_month=? ORDER BY date', [c.id, month]);
+    out.push({ ...b, month, days, payments, bill_no: `${c.id}-${month.replace('-', '')}` });
+  }
+  need(!q.id || out.length, 'customer not found');
+  return out;
+});
+
+// Delivery: month grid of explicit entries; the client fills in defaults.
+route('GET', '/api/delivery', async ({ q }) => {
+  const month = validMonth(q.month);
+  const entries = await all('SELECT customer_id c, date d, session s, qty q FROM deliveries WHERE date>=? AND date<=?', [dateStr(month, 1), monthEnd(month)]);
+  const { skipSet } = await monthData(month);
+  const skips = [...skipSet].map((k) => { const [c, d, s] = k.split('|'); return { c, d, s }; });
+  return { month, days: daysIn(month), customers: await all('SELECT * FROM customers ORDER BY id'), entries, skips };
+});
+// qty null/'' => clear the override (back to default); 0 => no delivery.
+route('PUT', '/api/delivery', async ({ body, user }) => {
+  validDate(body.date); checkDeliveryDate(user, body.date); need(['AM', 'PM'].includes(body.session), 'session must be AM or PM');
+  need(await exists('customers', body.customer_id), 'unknown customer');
+  if (body.qty === null || body.qty === '' || body.qty === undefined) await run('DELETE FROM deliveries WHERE date=? AND customer_id=? AND session=?', [body.date, body.customer_id, body.session]);
+  else await run('INSERT OR REPLACE INTO deliveries(date,customer_id,session,qty) VALUES(?,?,?,?)', [body.date, body.customer_id, body.session, num(body.qty, 'qty')]);
+  return { ok: true };
+});
+route('POST', '/api/delivery/reset-day', async ({ body }) => { // clear all overrides for a day (optionally one session)
+  validDate(body.date);
+  if (body.session) await run('DELETE FROM deliveries WHERE date=? AND session=?', [body.date, body.session]);
+  else await run('DELETE FROM deliveries WHERE date=?', [body.date]);
+  return { ok: true };
+});
+
+// Delivery-boy friendly list for one date + session: no prices, phones or amounts.
+route('GET', '/api/route', async ({ q, user }) => {
+  validDate(q.date); need(['AM', 'PM'].includes(q.session), 'session must be AM or PM'); checkDeliveryDate(user, q.date);
+  const ov = new Map((await all('SELECT customer_id c, qty q FROM deliveries WHERE date=? AND session=?', [q.date, q.session])).map((r) => [r.c, r.q]));
+  const skipBy = new Map();
+  for (const k of await all("SELECT * FROM skips WHERE status='active' AND from_date<=? AND to_date>=?", [q.date, q.date]))
+    if (sessionsOf(k.session).includes(q.session)) skipBy.set(k.customer_id, { note: k.note, to: k.to_date });
+  const items = [];
+  for (const c of await all('SELECT * FROM customers ORDER BY id')) {
+    const def = c.status === 'Active' ? (q.session === 'AM' ? c.am : c.pm) : 0;
+    const qty = ov.has(c.id) ? ov.get(c.id) : null;
+    if (def > 0 || (qty !== null && qty > 0)) items.push({ id: c.id, name: c.name, def, qty, skip: skipBy.get(c.id) || null });
+  }
+  return { date: q.date, session: q.session, items };
+});
+route('GET', '/api/me', async ({ user }) => {
+  const me = { role: user.role, today: today(), yesterday: yesterday() };
+  if (user.role === 'customer') { const c = await get('SELECT id, name FROM customers WHERE id=?', [user.cid]); Object.assign(me, { cid: user.cid, name: c && c.name }); }
+  return me;
+});
+route('POST', '/api/logout', async ({ user }) => { await run('DELETE FROM sessions WHERE token=?', [user.token]); return { ok: true, clear: true }; });
+route('PUT', '/api/password', async ({ body, user }) => {
+  need(user.role === 'admin', 'Admin only');
+  need(['admin', 'delivery'].includes(body.role), 'unknown account');
+  need(String(body.password || '').length >= 6, 'Password must be at least 6 characters');
+  await setPassword(body.role, body.password);
+  await run('DELETE FROM sessions WHERE role=? AND token<>?', [body.role, user.token]); // sign out other devices on that account
+  return { ok: true };
+});
+
+for (const [name, cfg] of Object.entries(masters)) {
+  route('GET', `/api/${name}`, () => all(`SELECT * FROM ${cfg.table} ORDER BY ${cfg.order}`));
+  route('POST', `/api/${name}`, async ({ body }) => {
+    const o = await pick(cfg.fields, body); const id = await nextId(cfg.table, cfg.prefix, cfg.pad);
+    const cols = ['id', ...Object.keys(o)];
+    await run(`INSERT INTO ${cfg.table}(${cols.join(',')}) VALUES(${cols.map(() => '?').join(',')})`, [id, ...Object.values(o)]);
+    return { id, ...o };
+  });
+  route('PUT', `/api/${name}/([^/]+)`, async ({ body, m }) => {
+    need(await exists(cfg.table, m[1]), 'not found');
+    const o = await pick(cfg.fields, body);
+    await run(`UPDATE ${cfg.table} SET ${Object.keys(o).map((k) => k + '=?').join(',')} WHERE id=?`, [...Object.values(o), m[1]]);
+    return { id: m[1], ...o };
+  });
+  route('DELETE', `/api/${name}/([^/]+)`, async ({ m }) => {
+    const dep = name === 'customers' ? ['payments', 'deliveries'] : ['cow_yield'];
+    const col = name === 'customers' ? 'customer_id' : 'cow_id';
+    for (const t of dep) if (await get(`SELECT 1 x FROM ${t} WHERE ${col}=?`, [m[1]])) need(false, `Has ${t} records — mark Inactive instead of deleting.`);
+    await run(`DELETE FROM ${cfg.table} WHERE id=?`, [m[1]]); return { ok: true };
+  });
+}
+for (const [name, cfg] of Object.entries(resources)) {
+  route('GET', `/api/${name}`, ({ q }) => {
+    let sql = `SELECT * FROM ${cfg.table}`; const args = [];
+    if (q.month) { validMonth(q.month); sql += ` WHERE ${cfg.month} ${cfg.monthIsExact ? '= ?' : 'BETWEEN ? AND ?'}`; args.push(...(cfg.monthIsExact ? [q.month] : [dateStr(q.month, 1), monthEnd(q.month)])); }
+    return all(`${sql} ORDER BY ${cfg.order}`, args);
+  });
+  route('POST', `/api/${name}`, async ({ body }) => {
+    const o = await pick(cfg.fields, body); const cols = Object.keys(o);
+    const r = await run(`INSERT INTO ${cfg.table}(${cols.join(',')}) VALUES(${cols.map(() => '?').join(',')})`, Object.values(o));
+    return { id: r.id, ...o };
+  });
+  route('PUT', `/api/${name}/(\\d+)`, async ({ body, m }) => {
+    const o = await pick(cfg.fields, body);
+    const r = await run(`UPDATE ${cfg.table} SET ${Object.keys(o).map((k) => k + '=?').join(',')} WHERE id=?`, [...Object.values(o), m[1]]);
+    need(r.changes, 'not found'); return { id: Number(m[1]), ...o };
+  });
+  route('DELETE', `/api/${name}/(\\d+)`, async ({ m }) => { await run(`DELETE FROM ${cfg.table} WHERE id=?`, [m[1]]); return { ok: true }; });
+}
+
+// ---- customer accounts: password defaults to the phone number until the customer sets their own
+const digits = (v) => String(v ?? '').replace(/\D/g, '');
+const sha = (v) => crypto.createHash('sha256').update(String(v)).digest();
+const sameStr = (a, b) => crypto.timingSafeEqual(sha(a), sha(b));
+async function customerPwOk(cid, pw) {
+  const a = await get('SELECT * FROM customer_auth WHERE customer_id=?', [cid]);
+  if (a) return crypto.timingSafeEqual(Buffer.from(hashPw(pw ?? '', a.salt), 'hex'), Buffer.from(a.hash, 'hex'));
+  const c = await get('SELECT phone FROM customers WHERE id=?', [cid]);
+  const ph = digits(c && c.phone);
+  return ph.length >= 6 && sameStr(digits(pw), ph);
+}
+const setCustomerPassword = (cid, pw) => { const salt = crypto.randomBytes(16).toString('hex'); return run('INSERT OR REPLACE INTO customer_auth(customer_id,salt,hash) VALUES(?,?,?)', [cid, salt, hashPw(pw, salt)]); };
+
+// ending/cancelling a request never rewrites days that already passed
+async function cancelSkip(k) {
+  need(k && k.status === 'active', 'request not found');
+  const t = today();
+  need(k.to_date >= t, 'That request has already finished');
+  if (k.from_date >= t) await run("UPDATE skips SET status='cancelled' WHERE id=?", [k.id]);
+  else await run('UPDATE skips SET to_date=? WHERE id=?', [yesterday(), k.id]);
+}
+const skipRow = (k) => ({ id: k.id, customer_id: k.customer_id, name: k.name, session: k.session, from: k.from_date, to: k.to_date, note: k.note, created_by: k.created_by });
+
+// Delivery staff and admin: everything that is running now or coming up
+route('GET', '/api/notices', async () => {
+  const rows = await all("SELECT k.*, c.name FROM skips k JOIN customers c ON c.id=k.customer_id WHERE k.status='active' AND k.to_date >= ? ORDER BY k.from_date, c.id", [today()]);
+  return { today: today(), tomorrow: tomorrow(), items: rows.map(skipRow) };
+});
+route('POST', '/api/skips', async ({ body }) => { // admin records a request taken by phone
+  need(await exists('customers', body.customer_id), 'unknown customer');
+  validDate(body.from); validDate(body.to); need(body.to >= body.from, 'End date is before the start date');
+  need(['AM', 'PM', 'BOTH'].includes(body.session), 'session must be AM, PM or BOTH');
+  const r = await run('INSERT INTO skips(customer_id,from_date,to_date,session,note,created,created_by) VALUES(?,?,?,?,?,?,?)', [body.customer_id, body.from, body.to, body.session, String(body.note || '').slice(0, 200), new Date().toISOString(), 'admin']);
+  return { id: r.id };
+});
+route('DELETE', '/api/skips/(\\d+)', async ({ m }) => { await cancelSkip(await get('SELECT * FROM skips WHERE id=?', [m[1]])); return { ok: true }; });
+
+// Admin: customer login status and reset
+route('GET', '/api/customers/([^/]+)/login', async ({ m }) => {
+  const c = await get('SELECT id, phone FROM customers WHERE id=?', [m[1]]); need(c, 'not found');
+  const custom = !!(await get('SELECT 1 x FROM customer_auth WHERE customer_id=?', [m[1]]));
+  return { id: c.id, phone: c.phone, custom, password: custom ? null : (digits(c.phone).length >= 6 ? c.phone : null) };
+});
+route('PUT', '/api/customers/([^/]+)/password', async ({ body, m }) => { // no password => back to phone number
+  need(await exists('customers', m[1]), 'not found');
+  if (body.password) { need(String(body.password).length >= 4, 'Password must be at least 4 characters'); await setCustomerPassword(m[1], String(body.password)); }
+  else await run('DELETE FROM customer_auth WHERE customer_id=?', [m[1]]);
+  await run("DELETE FROM sessions WHERE role='customer' AND cid=?", [m[1]]);
+  return { ok: true };
+});
+
+// ---- customer portal
+route('GET', '/api/portal', async ({ q, user }) => {
+  const cid = user.cid, cutoff = billCutoff();
+  const month = q.month ? validMonth(q.month) : cutoff.slice(0, 7);
+  need(month <= today().slice(0, 7), 'No bills for future months');
+  const c = await get('SELECT * FROM customers WHERE id=?', [cid]); need(c, 'customer not found');
+  const { n, eff } = await monthData(month);
+  const days = []; let am = 0, pm = 0;
+  for (let d = 1; d <= n; d++) {
+    const ds = dateStr(month, d);
+    if (ds > cutoff) { days.push({ date: ds, am: null, pm: null }); continue; } // not yet updated
+    const a = eff(c, ds, 'AM'), p = eff(c, ds, 'PM'); am += a; pm += p; days.push({ date: ds, am: a, pm: p });
+  }
+  const payments = await all('SELECT date, amount, mode FROM payments WHERE customer_id=? AND bill_month=? ORDER BY date', [cid, month]);
+  const paid = payments.reduce((a, x) => a + x.amount, 0), amount = r2((am + pm) * c.price);
+  const skips = (await all("SELECT k.*, ? AS name FROM skips k WHERE customer_id=? AND status='active' AND to_date >= ? ORDER BY from_date", [c.name, cid, today()])).map(skipRow);
+  return { customer: { id: c.id, name: c.name, price: c.price, am: c.am, pm: c.pm }, month, cutoff, update_hour: BILL_HOUR, today: today(), tomorrow: tomorrow(),
+    days, am: r2(am), pm: r2(pm), total: r2(am + pm), amount, paid: r2(paid), due: r2(amount - paid), payments, skips,
+    default_password: !(await get('SELECT 1 x FROM customer_auth WHERE customer_id=?', [cid])) };
+});
+route('PUT', '/api/portal/password', async ({ body, user }) => {
+  need(await customerPwOk(user.cid, body.old), 'Current password is wrong');
+  need(String(body.password || '').length >= 6, 'New password must be at least 6 characters');
+  await setCustomerPassword(user.cid, String(body.password));
+  await run("DELETE FROM sessions WHERE role='customer' AND cid=? AND token<>?", [user.cid, user.token]);
+  return { ok: true };
+});
+route('POST', '/api/portal/skips', async ({ body, user }) => {
+  validDate(body.from); validDate(body.to);
+  need(body.from >= tomorrow(), 'Requests must start from tomorrow. For today, please call us.');
+  need(body.to >= body.from, 'End date is before the start date');
+  need(addDays(body.from, 59) >= body.to, 'You can skip up to 60 days at a time');
+  need(['AM', 'PM', 'BOTH'].includes(body.session), 'Choose morning, evening or both');
+  const r = await run('INSERT INTO skips(customer_id,from_date,to_date,session,note,created,created_by) VALUES(?,?,?,?,?,?,?)', [user.cid, body.from, body.to, body.session, String(body.note || '').slice(0, 200), new Date().toISOString(), 'customer']);
+  return { id: r.id };
+});
+route('DELETE', '/api/portal/skips/(\\d+)', async ({ m, user }) => {
+  const k = await get('SELECT * FROM skips WHERE id=? AND customer_id=?', [m[1], user.cid]);
+  await cancelSkip(k); return { ok: true };
+});
+
+// ---- request handler (Node req/res; works for http.createServer and Vercel functions)
+const SESSION_MS = 30 * 24 * 3600 * 1000;
+const cookieOf = (req, name) => (req.headers.cookie || '').split(/;\s*/).map((c) => c.split('=')).find((c) => c[0] === name)?.[1];
+async function sessionOf(req) {
+  const t = cookieOf(req, 'grv_sid'); if (!t) return null;
+  const r = await get('SELECT role, created, cid FROM sessions WHERE token=?', [t]);
+  if (!r || Date.now() - r.created > SESSION_MS) return null;
+  return { token: t, role: r.role, cid: r.cid };
+}
+const readBody = (req) => new Promise((resolve, reject) => {
+  if (req.body !== undefined) return resolve(typeof req.body === 'string' ? req.body : req.body && Object.keys(req.body).length ? JSON.stringify(req.body) : '');
+  let raw = '';
+  req.on('data', (c) => { raw += c; if (raw.length > 1e6) { reject(Object.assign(new Error('Request too large'), { status: 413 })); req.destroy(); } });
+  req.on('end', () => resolve(raw)); req.on('error', reject);
+});
+
+async function handle(req, res) {
+  const url = new URL(req.url, 'http://x');
+  const send = (code, body, type = 'application/json; charset=utf-8', extra = {}) => { res.writeHead(code, { 'Content-Type': type, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', ...extra }); res.end(body); };
+  const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
+  try {
+    await init();
+    const raw = await readBody(req);
+    const key = `${req.method} ${url.pathname}`;
+    if (key === 'POST /api/login') {
+      const b = raw ? JSON.parse(raw) : {};
+      const isCust = b.role === 'customer';
+      const cid = isCust ? String(b.id || '').trim().toUpperCase() : null;
+      const baseIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+      const ip = baseIp + (isCust ? '|' + cid : '');
+      const f = await get('SELECT n, until FROM login_fails WHERE ip=?', [ip]);
+      const fAll = await get('SELECT n, until FROM login_fails WHERE ip=?', ['all|' + baseIp]); // stops one device cycling through many customer IDs
+      need(!(f && f.n >= 5 && f.until > Date.now()) && !(fAll && fAll.n >= 20 && fAll.until > Date.now()), 'Too many attempts - wait a minute and try again');
+      let ok, u;
+      if (isCust) { ok = !!(await exists('customers', cid)) && await customerPwOk(cid, b.password); u = { role: 'customer' }; }
+      else { u = await get('SELECT * FROM users WHERE role=?', [String(b.role)]); ok = u && crypto.timingSafeEqual(Buffer.from(hashPw(b.password ?? '', u.salt), 'hex'), Buffer.from(u.hash, 'hex')); }
+      if (!ok) {
+        await run('INSERT OR REPLACE INTO login_fails(ip,n,until) VALUES(?,?,?)', [ip, (f && f.until > Date.now() ? f.n : 0) + 1, Date.now() + 60000]);
+        await run('INSERT OR REPLACE INTO login_fails(ip,n,until) VALUES(?,?,?)', ['all|' + baseIp, (fAll && fAll.until > Date.now() ? fAll.n : 0) + 1, Date.now() + 60000]);
+        throw Object.assign(new Error(isCust ? 'Wrong customer ID or password' : 'Wrong password'), { status: 401 });
+      }
+      await run('DELETE FROM login_fails WHERE ip=?', [ip]);
+      await run('DELETE FROM sessions WHERE created < ?', [Date.now() - SESSION_MS]);
+      const token = crypto.randomBytes(32).toString('hex');
+      await run('INSERT INTO sessions(token,role,created,cid) VALUES(?,?,?,?)', [token, u.role, Date.now(), cid]);
+      return send(200, JSON.stringify({ role: u.role }), undefined, { 'Set-Cookie': `grv_sid=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_MS / 1000}${secure}` });
+    }
+    const user = await sessionOf(req);
+    if (!user) throw Object.assign(new Error('Please sign in'), { status: 401 });
+    if (!roleAllows(user.role, key)) throw Object.assign(new Error('Not allowed for this account'), { status: 403 });
+    for (const r of routes) {
+      if (r.method !== req.method) continue;
+      const m = url.pathname.match(r.re); if (!m) continue;
+      const body = raw ? JSON.parse(raw) : {};
+      const out = await r.fn({ q: Object.fromEntries(url.searchParams), body, m: m.map(decodeURIComponent), user });
+      if (out && out.__raw !== undefined) return send(200, out.__raw, out.type, { 'Content-Disposition': `attachment; filename="${out.filename}"` });
+      return send(200, JSON.stringify(out), undefined, out && out.clear ? { 'Set-Cookie': `grv_sid=; HttpOnly; Path=/; Max-Age=0${secure}` } : {});
+    }
+    send(404, JSON.stringify({ error: 'Unknown endpoint' }));
+  } catch (e) {
+    const bad = e instanceof SyntaxError;
+    send(e.status || (bad ? 400 : 500), JSON.stringify({ error: bad ? 'Bad request' : e.message }));
+    if (!e.status && !bad) console.error(e);
+  }
+}
+
+module.exports = { handle, init, client, SCHEMA };

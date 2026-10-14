@@ -1,0 +1,14 @@
+{
+  "appId": "com.grvdairy.app",
+  "appName": "GRV Dairy",
+  "webDir": "www",
+  "server": {
+    "url": "http://10.249.147.73:3000",
+    "cleartext": true,
+    "errorPath": "error.html",
+    "androidScheme": "http"
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}
