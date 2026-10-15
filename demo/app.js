@@ -257,18 +257,19 @@ pages.bills = async (v) => {
   };
   // Payment dialog: shows what the customer bought and owes; the amount is pre-filled with the pending balance but can be changed.
   const payFor = guard(async (r) => {
-    const paid = (await api('payments?month=' + S.month)).filter((p) => p.customer_id === r.id);
+    const paidBox = h('div'); // filled in a moment after the dialog is already on screen
     const line = (l, val, cls = '') => h('div', { class: 'payrow ' + cls }, h('span', {}, l), h('b', {}, val));
     const intro = h('div', { class: 'payinfo' }, h('div', { class: 'tag' }, `${r.id} · ${monthLabel(S.month)}`),
       line('Total milk bought', lit(r.total) + ' L'), r.extras_amount ? line('Milk amount', inr(r.milk_amount)) : null, r.extras_amount ? line('Extras delivered (egg, curd...)', inr(r.extras_amount)) : null, line('Bill amount', inr(r.amount)), line('Already paid', inr(r.paid)), line('Pending', inr(Math.max(r.pending, 0)), 'big'),
-      paid.length ? h('div', { class: 'paid-list' }, h('div', { class: 'tag' }, 'Payments received'), paid.map((p) => h('div', { class: 'payrow' }, h('span', {}, `${p.date}${p.mode ? ' · ' + p.mode : ''}`),
-        h('span', {}, h('b', {}, inr(p.amount)), h('button', { type: 'button', class: 'link del', onclick: guard(async () => { if (!confirm(`Delete this ${inr(p.amount)} payment?`)) return; await api('payments/' + p.id, 'DELETE'); toast('Payment deleted'); $('#dlg').close(); render(); }) }, 'Delete'))))) : null);
+      paidBox);
     openForm({ title: `Payment — ${r.name}`, intro, saveLabel: 'OK', fields: [
       { key: 'date', label: 'Date', type: 'date', default: monthDefaultDate(), required: true },
       { key: 'customer_id', hidden: true, default: r.id }, { key: 'bill_month', hidden: true, default: S.month },
       { key: 'amount', label: 'Amount received (₹) — filled with the full pending amount; change it if they pay a different amount', type: 'number', default: Math.max(r.pending, 0) || '', placeholder: 'Type the amount', required: true },
       { key: 'mode', label: 'Payment mode', type: 'select', options: S.lists.modes }, { key: 'remarks', label: 'Remarks', type: 'text' }],
     onSave: async (d) => { await api('payments', 'POST', d); toast('Payment saved'); render(); } });
+    api('payments?month=' + S.month).then((all) => { const paid = all.filter((p) => p.customer_id === r.id); if (paid.length) paidBox.append(h('div', { class: 'paid-list' }, h('div', { class: 'tag' }, 'Payments received'), paid.map((p) => h('div', { class: 'payrow' }, h('span', {}, `${p.date}${p.mode ? ' · ' + p.mode : ''}`),
+        h('span', {}, h('b', {}, inr(p.amount)), h('button', { type: 'button', class: 'link del', onclick: guard(async () => { if (!confirm(`Delete this ${inr(p.amount)} payment?`)) return; await api('payments/' + p.id, 'DELETE'); toast('Payment deleted'); $('#dlg').close(); render(); }) }, 'Delete')))))); }).catch(() => {});
   });
   v.append(h('h1', {}, 'Monthly Bills'), h('p', { class: 'sub' }, `${monthLabel(S.month)} — built from actual daily AM/PM quantities.`),
     h('div', { class: 'bar' }, h('input', { type: 'search', placeholder: 'Search customer…', oninput: (e) => { filter = e.target.value; draw(); } }), h('span', { class: 'grow' }),
