@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS income(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEX
 CREATE TABLE IF NOT EXISTS expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, category TEXT, description TEXT DEFAULT '', amount REAL, mode TEXT DEFAULT '', paid_by TEXT DEFAULT '', remarks TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS cows(id TEXT PRIMARY KEY, name TEXT NOT NULL, breed TEXT DEFAULT '', lactation TEXT DEFAULT '', calving_date TEXT DEFAULT '', status TEXT DEFAULT 'Active', notes TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS cow_yield(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, cow_id TEXT, am REAL DEFAULT 0, pm REAL DEFAULT 0, notes TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS cow_ai(id INTEGER PRIMARY KEY AUTOINCREMENT, cow_id TEXT, ai_date TEXT, confirm_date TEXT DEFAULT '', result TEXT DEFAULT 'Pending', ack INTEGER DEFAULT 0, notes TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS users(role TEXT PRIMARY KEY, salt TEXT, hash TEXT);
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, role TEXT, created INTEGER, cid TEXT);
 CREATE TABLE IF NOT EXISTS customer_auth(customer_id TEXT PRIMARY KEY, salt TEXT, hash TEXT);
@@ -319,7 +320,7 @@ for (const [name, cfg] of Object.entries(masters)) {
     return { id: m[1], ...o };
   });
   route('DELETE', `/api/${name}/([^/]+)`, async ({ m }) => {
-    const dep = name === 'customers' ? ['payments', 'deliveries'] : ['cow_yield'];
+    const dep = name === 'customers' ? ['payments', 'deliveries'] : ['cow_yield', 'cow_ai'];
     const col = name === 'customers' ? 'customer_id' : 'cow_id';
     for (const t of dep) if (await get(`SELECT 1 x FROM ${t} WHERE ${col}=?`, [m[1]])) need(false, `Has ${t} records — mark Inactive instead of deleting.`);
     await run(`DELETE FROM ${cfg.table} WHERE id=?`, [m[1]]); return { ok: true };
@@ -405,6 +406,50 @@ route('PUT', '/api/yield-cell', async ({ body }) => {
   else if (old) await run('UPDATE cow_yield SET am=?, pm=? WHERE id=?', [am, pm, old.id]);
   else await run('INSERT INTO cow_yield(date,cow_id,am,pm,notes) VALUES(?,?,?,?,?)', [body.date, body.cow_id, am, pm, '']);
   return { ok: true };
+});
+
+
+// ---- artificial insemination (AI): AI date -> confirmation check -> pregnancy tracking, with a reminder every 3 months
+const GESTATION_DAYS = 283, CONFIRM_AFTER_DAYS = 45, MILESTONE_DAYS = 90;
+const daysBetween = (a, b) => Math.round((new Date(b + 'T12:00:00Z') - new Date(a + 'T12:00:00Z')) / 864e5);
+const aiRow = (r) => {
+  const days = daysBetween(r.ai_date, today());
+  return { ...r, days, confirm_from: addDays(r.ai_date, CONFIRM_AFTER_DAYS), due_date: r.result === 'Pregnant' ? addDays(r.ai_date, GESTATION_DAYS) : '',
+    months: r.result === 'Pregnant' ? Math.floor(days / 30.4) : null };
+};
+const milestone = (r) => (r.result === 'Pregnant' ? Math.min(Math.floor(r.days / MILESTONE_DAYS), 4) : 0); // 1-3 = every 3 months, 4 = calving due (day 283+)
+route('GET', '/api/cow-ai', async ({ q }) => (await all(q.cow_id ? 'SELECT * FROM cow_ai WHERE cow_id=? ORDER BY ai_date DESC, id DESC' : 'SELECT * FROM cow_ai ORDER BY ai_date DESC, id DESC', q.cow_id ? [q.cow_id] : [])).map(aiRow));
+route('POST', '/api/cow-ai', async ({ body }) => {
+  need(await exists('cows', body.cow_id), 'unknown cow'); validDate(body.ai_date);
+  need(body.ai_date <= today(), 'AI date cannot be in the future');
+  const r = await run('INSERT INTO cow_ai(cow_id,ai_date,notes) VALUES(?,?,?)', [body.cow_id, body.ai_date, String(body.notes || '').slice(0, 200)]);
+  return { id: r.id };
+});
+route('PUT', '/api/cow-ai/(\\d+)', async ({ body, m }) => { // record the confirmation (or fix the AI date / notes)
+  const r = await get('SELECT * FROM cow_ai WHERE id=?', [m[1]]); need(r, 'not found');
+  const ai_date = body.ai_date ? validDate(body.ai_date) : r.ai_date;
+  const result = body.result === undefined ? r.result : body.result;
+  need(['Pending', 'Pregnant', 'Not pregnant'].includes(result), 'result must be Pending, Pregnant or Not pregnant');
+  const confirm_date = result === 'Pending' ? '' : validDate(body.confirm_date || r.confirm_date);
+  need(!confirm_date || confirm_date >= ai_date, 'Confirmation date is before the AI date');
+  const ack = ai_date !== r.ai_date || result !== r.result ? 0 : r.ack; // a changed date or result restarts the reminders
+  await run('UPDATE cow_ai SET ai_date=?, confirm_date=?, result=?, ack=?, notes=? WHERE id=?', [ai_date, confirm_date, result, ack, body.notes === undefined ? r.notes : String(body.notes).slice(0, 200), m[1]]);
+  return { ok: true };
+});
+route('DELETE', '/api/cow-ai/(\\d+)', async ({ m }) => { await run('DELETE FROM cow_ai WHERE id=?', [m[1]]); return { ok: true }; });
+route('POST', '/api/cow-ai/(\\d+)/ack', async ({ m }) => { // admin has seen the current reminder
+  const r = await get('SELECT * FROM cow_ai WHERE id=?', [m[1]]); need(r, 'not found');
+  await run('UPDATE cow_ai SET ack=? WHERE id=?', [Math.max(r.ack, milestone(aiRow(r))), m[1]]); return { ok: true };
+});
+route('GET', '/api/cow-alerts', async () => {
+  const out = [];
+  for (const r of (await all("SELECT a.*, c.name cow_name FROM cow_ai a JOIN cows c ON c.id=a.cow_id WHERE a.result<>'Not pregnant'")).map((x) => ({ ...aiRow(x), cow_name: x.cow_name }))) {
+    const base = { id: r.id, cow_id: r.cow_id, cow_name: r.cow_name, ai_date: r.ai_date, days: r.days, due_date: r.due_date };
+    if (r.result === 'Pending' && r.days >= CONFIRM_AFTER_DAYS) out.push({ ...base, type: 'confirm' });
+    const k = milestone(r);
+    if (k > r.ack) out.push({ ...base, type: 'milestone', milestone: k });
+  }
+  return out.sort((a, b) => b.days - a.days);
 });
 
 // ---- customer portal

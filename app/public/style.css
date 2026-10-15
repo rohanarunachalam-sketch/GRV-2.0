@@ -233,3 +233,14 @@ body.customer .bar .seg{width:100%}
 .inv-sum tr.paid td{color:#1f6d11}
 .inv-sum tr.bal td{font-weight:700;border-top:1px solid #0b1410}
 .inv-sum tr.total td{font-size:18px;font-weight:800;background:#edf7ea;border-top:2px solid #2c9018;border-bottom:2px solid #2c9018;color:#0b1410;padding:8px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+
+/* cow yield grid: dates across, cows down */
+.ygrid th.ycol{text-align:center;min-width:76px;line-height:1.2}.ygrid th.ycol .wd{font-size:10.5px;font-weight:500;opacity:.7}
+.ygrid th.ycol.today{background:var(--brand-l)}
+.ygrid td.gridcell{border-left:1px solid var(--line);text-align:center}
+.ygrid td.gridcell input.q{display:block;width:62px;margin:2px auto}
+/* AI */
+.aicard{border:1px solid var(--line);border-radius:10px;padding:10px;margin:8px 0}
+.airow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px}
+.alerts{margin-bottom:14px}
+.aialert{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line)}

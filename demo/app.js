@@ -86,7 +86,9 @@ const pages = {};
 pages.dashboard = async (v) => {
   const d = await api('dashboard?month=' + S.month);
   const max = Math.max(1, ...d.daily.map((x) => x.total));
+  const alerts = await api('cow-alerts');
   v.append(h('h1', {}, 'Dashboard'), h('p', { class: 'sub' }, monthLabel(S.month)),
+    alerts.length ? h('div', { class: 'card alerts' }, h('h2', { style: 'margin-top:0' }, '🐄 Cow reminders'), alerts.map((a) => aiAlert(a, () => render()))) : null,
     h('div', { class: 'cards' },
       [['Active Customers', `${d.active} / ${d.customers}`], ['Milk Sold', lit(d.litres) + ' L'], ['Total Sales', inr(d.sales)], ['Payments Collected', inr(d.collected)],
         ['Pending Amount', inr(d.pending), d.pending > 0 ? 'warn' : ''], ['Other Income', inr(d.other_income)], ['Expenses', inr(d.expenses)], ['Net Profit', inr(d.net), d.net >= 0 ? 'good' : 'bad'],
@@ -96,6 +98,16 @@ pages.dashboard = async (v) => {
       h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Highest pending'),
         d.top_pending.length ? h('div', { class: 'bars' }, d.top_pending.map((p) => h('div', { class: 'row' }, h('span', { class: 'name' }, p.name), h('span', { class: 'bar-fill', style: `width:${(p.pending / d.top_pending[0].pending) * 160}px` }), inr(p.pending)))) : h('p', { class: 'mute' }, 'Nothing pending 🎉'))));
 };
+
+// One cow reminder: confirmation due, or a 3-monthly pregnancy check-in. "Done" hides a check-in until the next 3-month mark.
+function aiAlert(a, after) {
+  const text = a.type === 'confirm' ? `${a.cow_name}: AI was ${a.days} days ago (${dayLabel(a.ai_date)}) — please confirm if she is pregnant.`
+    : a.milestone === 4 ? `${a.cow_name}: calving is due (expected ${dayLabel(a.due_date)}).`
+    : `${a.cow_name}: ${a.milestone * 3} months of pregnancy completed (day ${a.days}). Calving expected ${dayLabel(a.due_date)}.`;
+  return h('div', { class: 'aialert' }, h('span', {}, text), a.type === 'confirm'
+    ? h('button', { onclick: () => aiDialog({ id: a.cow_id, name: a.cow_name }) }, 'Confirm')
+    : h('button', { onclick: guard(async () => { await api(`cow-ai/${a.id}/ack`, 'POST'); toast('Noted'); after(); }) }, 'Done'));
+}
 
 // Delivery: day entry + whole-month grid. Blank = default quantity, 0 = no delivery.
 const D = { view: innerWidth < 800 ? 'cards' : 'day', date: null, session: 'AM', filter: '', data: null, month: null };
@@ -344,16 +356,45 @@ pages.expenses = crud({ title: 'Expense', sub: 'Feed, medicine, labour and other
 pages.cows = crud({ title: 'Cow', sub: 'Cow master list.', resource: 'cows', monthly: false, master: true,
   fields: () => [{ key: 'name', label: 'Name / number', required: true }, { key: 'breed', label: 'Breed' }, { key: 'lactation', label: 'Lactation status', type: 'select', options: ['', 'Lactating', 'Dry', 'Heifer', 'Calf'] },
     { key: 'calving_date', label: 'Calving date', type: 'date' }, { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Sold', 'Deceased'] }, { key: 'notes', label: 'Notes', type: 'textarea' }],
-  cols: [{ label: 'ID', key: 'id' }, { label: 'Name', key: 'name' }, { label: 'Breed', key: 'breed' }, { label: 'Lactation', key: 'lactation' }, { label: 'Calving', key: 'calving_date' }, { label: 'Status', key: 'status' }, { label: 'Notes', key: 'notes' }] });
+  cols: [{ label: 'ID', key: 'id' }, { label: 'Name', key: 'name' }, { label: 'Breed', key: 'breed' }, { label: 'Lactation', key: 'lactation' }, { label: 'Calving', key: 'calving_date' }, { label: 'Status', key: 'status' }, { label: 'Notes', key: 'notes' }],
+  rowExtra: (r) => h('button', { class: 'link', onclick: () => aiDialog(r) }, 'AI') });
 
-// Cow yield as a grid: dates down the side, one pair of columns (AM / PM) per cow. Type straight into a cell; it saves when you leave it.
+// AI (artificial insemination) for one cow: record the AI date, later the confirmation, and see the pregnancy progress.
+async function aiDialog(cow) {
+  const dlg = $('#dlg');
+  const fmt = (d) => (d ? new Date(d + 'T00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '–');
+  const draw = async () => {
+    const recs = await api('cow-ai?cow_id=' + cow.id);
+    dlg.innerHTML = '';
+    const ad = h('input', { type: 'date', value: today(), max: today() });
+    const add = guard(async () => { await api('cow-ai', 'POST', { cow_id: cow.id, ai_date: ad.value }); toast('AI recorded'); await draw(); });
+    const card = (r) => {
+      const cd = h('input', { type: 'date', value: r.confirm_date || today(), min: r.ai_date });
+      const rs = h('select', {}, ['Pregnant', 'Not pregnant'].map((o) => h('option', { value: o, selected: o === r.result }, o)));
+      const conf = guard(async () => { await api('cow-ai/' + r.id, 'PUT', { result: rs.value, confirm_date: cd.value }); toast('Saved'); await draw(); });
+      const status = r.result === 'Pregnant' ? `Pregnant — ${Math.floor(r.days / 30.4)} months (day ${r.days}), calving due ${fmt(r.due_date)}`
+        : r.result === 'Not pregnant' ? `Not pregnant (checked ${fmt(r.confirm_date)})` : `Waiting for confirmation (check from ${fmt(r.confirm_from)}) — day ${r.days}`;
+      return h('div', { class: 'aicard' }, h('div', {}, h('b', {}, 'AI on ' + fmt(r.ai_date)), ' ', pill(r.result)), h('div', { class: 'tag' }, status),
+        r.result !== 'Not pregnant' ? h('div', { class: 'airow' }, r.result === 'Pending' ? 'Confirmation:' : 'Change:', cd, rs, h('button', { type: 'button', onclick: conf }, 'Save')) : null,
+        h('div', { class: 'airow' }, r.result !== 'Pending' ? h('button', { type: 'button', class: 'link', onclick: guard(async () => { await api('cow-ai/' + r.id, 'PUT', { result: 'Pending' }); await draw(); }) }, 'Mark as not confirmed') : null,
+          h('button', { type: 'button', class: 'link del', onclick: guard(async () => { if (!confirmDel('this AI record')) return; await api('cow-ai/' + r.id, 'DELETE'); await draw(); }) }, 'Delete')));
+    };
+    dlg.append(h('div', { class: 'form' }, h('h1', {}, `AI — ${cow.name}`),
+      h('label', {}, 'New AI date', h('div', { class: 'airow' }, ad, h('button', { type: 'button', class: 'pri', onclick: add }, 'Record AI'))),
+      recs.length ? recs.map(card) : h('p', { class: 'mute' }, 'No AI recorded yet.'),
+      h('div', { class: 'acts' }, h('button', { type: 'button', onclick: () => { dlg.close(); render(); } }, 'Close'))));
+  };
+  await draw(); dlg.showModal();
+}
+
+// Cow yield as a grid: dates across the top, one row per cow (AM and PM boxes per day). Type straight into a cell; it saves when you leave it.
 pages.yield = async (v) => {
   const [cows, rows] = await Promise.all([api('cows'), api('cow_yield?month=' + S.month)]);
   const [yy, mm] = S.month.split('-').map(Number), n = new Date(yy, mm, 0).getDate();
   const dayStr = (d) => `${S.month}-${pad(d)}`;
   const data = new Map(rows.map((r) => [`${r.cow_id}|${r.date}`, { am: r.am, pm: r.pm }]));
   const shown = cows.filter((c) => c.status === 'Active' || rows.some((r) => r.cow_id === c.id));
-  v.append(h('h1', {}, 'Cow Yield'), h('p', { class: 'sub' }, `${monthLabel(S.month)} — litres per cow per day. Leave a cell empty if there was no milking.`));
+  v.append(h('h1', {}, 'Cow Yield'), h('p', { class: 'sub' }, `${monthLabel(S.month)} — litres per cow per day (AM on top, PM below). Leave a cell empty if there was no milking.`));
   if (!shown.length) return v.append(h('p', { class: 'mute' }, 'No cows yet. '), h('a', { href: '#/cows' }, h('button', { class: 'pri' }, 'Add cows')));
   v.append(h('div', { class: 'bar' }, h('a', { href: '#/cows' }, h('button', {}, 'Manage cows')), h('span', { class: 'grow' })));
 
@@ -364,15 +405,15 @@ pages.yield = async (v) => {
     dayTot[d].textContent = sumDay(d) ? lit(sumDay(d)) : '–';
     let all = 0;
     for (const c of shown) {
-      let am = 0, pm = 0;
-      for (let k = 1; k <= n; k++) { const r = data.get(`${c.id}|${dayStr(k)}`); if (r) { am += r.am; pm += r.pm; } }
-      cowTot[c.id].am.textContent = lit(am); cowTot[c.id].pm.textContent = lit(pm); all += am + pm;
+      let t = 0;
+      for (let k = 1; k <= n; k++) { const r = data.get(`${c.id}|${dayStr(k)}`); if (r) t += r.am + r.pm; }
+      cowTot[c.id].textContent = lit(t); all += t;
     }
     cowTot.all.textContent = lit(all);
   };
-  const cellPair = (c, d) => {
+  const cell = (c, d) => {
     const key = `${c.id}|${dayStr(d)}`, r = data.get(key);
-    const mk = (which) => h('input', { class: 'q', type: 'number', step: 'any', min: 0, inputmode: 'decimal', 'aria-label': `${c.name} ${which} ${dayStr(d)}`, value: r && r[which] ? r[which] : '' });
+    const mk = (which) => h('input', { class: 'q', type: 'number', step: 'any', min: 0, inputmode: 'decimal', placeholder: which.toUpperCase(), 'aria-label': `${c.name} ${which} ${dayStr(d)}`, value: r && r[which] ? r[which] : '' });
     const a = mk('am'), p = mk('pm');
     const save = guard(async () => {
       if ((a.value !== '' && !(Number(a.value) >= 0)) || (p.value !== '' && !(Number(p.value) >= 0))) { toast('Enter a number ≥ 0', true); return; }
@@ -381,22 +422,18 @@ pages.yield = async (v) => {
       refresh(d);
     });
     a.addEventListener('change', save); p.addEventListener('change', save);
-    return [h('td', { class: 'gridcell' }, a), h('td', { class: 'gridcell' }, p)];
+    return h('td', { class: 'gridcell' }, a, p);
   };
-  const t = today();
-  const body = [];
-  for (let d = 1; d <= n; d++) {
-    dayTot[d] = h('td', { class: 'n' });
-    body.push(h('tr', { class: dayStr(d) === t ? 'today' : '' }, h('td', { class: 'stick' }, dayLabel(dayStr(d))), shown.map((c) => cellPair(c, d)), dayTot[d]));
-  }
+  const t = today(), days = Array.from({ length: n }, (_, i) => i + 1);
+  const dayHead = (d) => h('th', { class: 'n ycol' + (dayStr(d) === t ? ' today' : ''), title: dayLabel(dayStr(d)) }, h('div', {}, pad(d)), h('div', { class: 'wd' }, new Date(dayStr(d) + 'T00:00').toLocaleDateString('en-IN', { weekday: 'short' })));
+  const body = shown.map((c) => { cowTot[c.id] = h('td', { class: 'n' }); return h('tr', {}, h('td', { class: 'stick', title: c.breed || '' }, c.name), days.map((d) => cell(c, d)), cowTot[c.id]); });
   cowTot.all = h('td', { class: 'n' });
-  const foot = h('tr', {}, h('td', { class: 'stick' }, 'Total'), shown.map((c) => { cowTot[c.id] = { am: h('td', { class: 'n' }), pm: h('td', { class: 'n' }) }; return [cowTot[c.id].am, cowTot[c.id].pm]; }), cowTot.all);
+  const foot = h('tr', {}, h('td', { class: 'stick' }, 'Day total'), days.map((d) => (dayTot[d] = h('td', { class: 'n' }))), cowTot.all);
   v.append(h('div', { class: 'tablewrap' }, h('table', { class: 'ygrid' },
-    h('thead', {}, h('tr', {}, h('th', { rowspan: 2, class: 'stick' }, 'Date'), shown.map((c) => h('th', { colspan: 2, class: 'ycow', title: c.breed || '' }, c.name)), h('th', { rowspan: 2, class: 'n' }, 'Day total')),
-      h('tr', {}, shown.map(() => [h('th', { class: 'n sub2' }, 'AM'), h('th', { class: 'n sub2' }, 'PM')]))),
+    h('thead', {}, h('tr', {}, h('th', { class: 'stick' }, 'Cow'), days.map(dayHead), h('th', { class: 'n' }, 'Cow total'))),
     h('tbody', {}, body), h('tfoot', {}, foot))));
-  for (let d = 1; d <= n; d++) refresh(d);
-  const todayRow = $('tr.today'); if (todayRow) todayRow.scrollIntoView({ block: 'center' });
+  for (const d of days) refresh(d);
+  const todayCol = $('th.today'); if (todayCol) todayCol.scrollIntoView({ inline: 'center', block: 'nearest' });
 };
 
 pages.daily = async (v) => {
@@ -568,8 +605,10 @@ async function render() {
   else page = hashPage || 'dashboard';
   let badge = 0;
   if (role !== 'customer') { try { const n = await api('notices'); badge = n.items.filter((k) => k.from <= n.today).length; } catch {} }
+  let cowBadge = 0;
+  if (admin) { try { cowBadge = (await api('cow-alerts')).length; } catch {} }
   const links = admin ? NAV : role === 'delivery' ? DELIVERY_NAV : [];
-  for (const [k, l] of links) nav.append(h('a', { href: '#/' + k, class: k === page || (page === 'bill' && k === 'bills') ? 'on' : '' }, l, k === 'notices' && badge ? h('span', { class: 'badge' }, badge) : null));
+  for (const [k, l] of links) nav.append(h('a', { href: '#/' + k, class: k === page || (page === 'bill' && k === 'bills') ? 'on' : '' }, l, k === 'notices' && badge ? h('span', { class: 'badge' }, badge) : null, k === 'cows' && cowBadge ? h('span', { class: 'badge' }, cowBadge) : null));
   $('#menu').hidden = !links.length; $('.month').hidden = !admin;
   $('#who').textContent = { admin: 'Admin', delivery: 'Delivery', customer: S.user.cid }[role];
   document.body.classList.toggle('customer', role === 'customer');
