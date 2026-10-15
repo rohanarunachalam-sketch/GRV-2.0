@@ -359,3 +359,4 @@ body.customer .bar .seg{width:100%}
 .cal-key span{display:inline-flex;align-items:center;gap:7px}
 .cal-key span::before{content:"";width:14px;height:14px;border-radius:5px}
 .cal-key .ok::before{background:#4fb36f}.cal-key .pause::before{background:#f2c230}.cal-key .out::before{background:#e5584a}
+.ygrid tfoot td{position:static}.ygrid tfoot td.stick{position:sticky}

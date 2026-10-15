@@ -407,17 +407,20 @@ pages.yield = async (v) => {
   v.append(h('div', { class: 'bar' }, h('a', { href: '#/cows' }, h('button', {}, 'Manage cows')), h('span', { class: 'grow' })));
 
   const num = (x) => Number(x) || 0;
-  const dayTot = {}, cowTot = {};
-  const sumDay = (d) => shown.reduce((a, c) => { const r = data.get(`${c.id}|${dayStr(d)}`); return a + (r ? r.am + r.pm : 0); }, 0);
+  const dayAm = {}, dayPm = {}, dayTot = {}, cowAm = {}, cowPm = {}, cowTot = {};
+  const get = (c, d) => data.get(`${c.id}|${dayStr(d)}`);
+  const show = (el, x) => { el.textContent = x ? lit(x) : '–'; };
   const refresh = (d) => {
-    dayTot[d].textContent = sumDay(d) ? lit(sumDay(d)) : '–';
-    let all = 0;
+    let am = 0, pm = 0;
+    for (const c of shown) { const r = get(c, d); if (r) { am += r.am; pm += r.pm; } }
+    show(dayAm[d], am); show(dayPm[d], pm); show(dayTot[d], am + pm);
+    let aAll = 0, pAll = 0;
     for (const c of shown) {
-      let t = 0;
-      for (let k = 1; k <= n; k++) { const r = data.get(`${c.id}|${dayStr(k)}`); if (r) t += r.am + r.pm; }
-      cowTot[c.id].textContent = lit(t); all += t;
+      let a = 0, p = 0;
+      for (let k = 1; k <= n; k++) { const r = get(c, k); if (r) { a += r.am; p += r.pm; } }
+      show(cowAm[c.id], a); show(cowPm[c.id], p); cowTot[c.id].textContent = lit(a + p); aAll += a; pAll += p;
     }
-    cowTot.all.textContent = lit(all);
+    show(cowAm.all, aAll); show(cowPm.all, pAll); cowTot.all.textContent = lit(aAll + pAll);
   };
   const cell = (c, d) => {
     const key = `${c.id}|${dayStr(d)}`, r = data.get(key);
@@ -434,12 +437,14 @@ pages.yield = async (v) => {
   };
   const t = today(), days = Array.from({ length: n }, (_, i) => i + 1);
   const dayHead = (d) => h('th', { class: 'n ycol' + (dayStr(d) === t ? ' today' : ''), title: dayLabel(dayStr(d)) }, h('div', {}, pad(d)), h('div', { class: 'wd' }, new Date(dayStr(d) + 'T00:00').toLocaleDateString('en-IN', { weekday: 'short' })));
-  const body = shown.map((c) => { cowTot[c.id] = h('td', { class: 'n' }); return h('tr', {}, h('td', { class: 'stick', title: c.breed || '' }, c.name), days.map((d) => cell(c, d)), cowTot[c.id]); });
-  cowTot.all = h('td', { class: 'n' });
-  const foot = h('tr', {}, h('td', { class: 'stick' }, 'Day total'), days.map((d) => (dayTot[d] = h('td', { class: 'n' }))), cowTot.all);
+  const body = shown.map((c) => { cowAm[c.id] = h('td', { class: 'n' }); cowPm[c.id] = h('td', { class: 'n' }); cowTot[c.id] = h('td', { class: 'n' }); return h('tr', {}, h('td', { class: 'stick', title: c.breed || '' }, c.name), days.map((d) => cell(c, d)), cowAm[c.id], cowPm[c.id], cowTot[c.id]); });
+  cowAm.all = h('td', { class: 'n' }); cowPm.all = h('td', { class: 'n' }); cowTot.all = h('td', { class: 'n' });
+  const footRow = (label, store, a, p, t) => h('tr', {}, h('td', { class: 'stick' }, label), days.map((d) => (store[d] = h('td', { class: 'n' }))), a, p, t);
+  const blank = () => h('td', { class: 'n' });
   v.append(h('div', { class: 'tablewrap' }, h('table', { class: 'ygrid' },
-    h('thead', {}, h('tr', {}, h('th', { class: 'stick' }, 'Cow'), days.map(dayHead), h('th', { class: 'n' }, 'Cow total'))),
-    h('tbody', {}, body), h('tfoot', {}, foot))));
+    h('thead', {}, h('tr', {}, h('th', { class: 'stick' }, 'Cow'), days.map(dayHead), h('th', { class: 'n' }, 'AM total'), h('th', { class: 'n' }, 'PM total'), h('th', { class: 'n' }, 'Cow total'))),
+    h('tbody', {}, body),
+    h('tfoot', {}, footRow('AM total', dayAm, cowAm.all, blank(), blank()), footRow('PM total', dayPm, blank(), cowPm.all, blank()), footRow('Day total', dayTot, blank(), blank(), cowTot.all)))));
   for (const d of days) refresh(d);
   const todayCol = $('th.today'); if (todayCol) todayCol.scrollIntoView({ inline: 'center', block: 'nearest' });
 };
