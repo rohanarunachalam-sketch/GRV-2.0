@@ -19,21 +19,21 @@ h2{font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
 .mute{color:var(--mute)}.good{color:var(--good)}.bad{color:var(--bad)}.warn{color:var(--warn)}
 
 /* ---- header ---- */
-header{display:flex;align-items:center;gap:6px 18px;padding:9px 20px;background:var(--brand);color:#fff;position:sticky;top:0;z-index:10;flex-wrap:wrap;box-shadow:0 2px 6px rgba(11,20,16,.15)}
-.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;letter-spacing:-.01em;white-space:nowrap;color:#fff}
-#who{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--brand);background:#fff;padding:2px 9px;border-radius:99px;margin-left:2px}
+header{display:flex;align-items:center;gap:6px 18px;padding:9px 20px;background:#fff;color:var(--ink);position:sticky;top:0;z-index:10;flex-wrap:wrap;border-bottom:3px solid var(--brand);box-shadow:0 2px 6px rgba(11,20,16,.08)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;letter-spacing:-.01em;white-space:nowrap;color:var(--brand-d)}
+#who{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#fff;background:var(--brand);padding:2px 9px;border-radius:99px;margin-left:2px}
 img.logo{height:40px;width:40px;object-fit:contain;background:#fff;border-radius:10px;padding:2px}
 nav{display:flex;gap:2px;flex-wrap:wrap;flex:1}
-nav a{padding:8px 13px;border-radius:8px;color:rgba(255,255,255,.88);font-weight:600;font-size:14px;position:relative}
-nav a:hover{background:rgba(255,255,255,.16);color:#fff}
-nav a.on{color:var(--brand);background:#fff}
-.month{color:#fff;font-size:12.5px;display:flex;align-items:center;gap:6px}
-.month input{color:var(--ink);border-color:transparent}
-header button{background:transparent;color:#fff;border-color:rgba(255,255,255,.7)}
-header button:hover{background:rgba(255,255,255,.18);border-color:#fff}
+nav a{padding:8px 13px;border-radius:8px;color:var(--ink);font-weight:600;font-size:14px;position:relative}
+nav a:hover{background:var(--brand-l);color:var(--brand-d)}
+nav a.on{color:#fff;background:var(--brand)}
+.month{color:var(--mute);font-size:12.5px;display:flex;align-items:center;gap:6px}
+.month input{color:var(--ink)}
+header button{background:#fff;color:var(--brand-d);border-color:var(--brand)}
+header button:hover{background:var(--brand-l);border-color:var(--brand-d)}
 #menu{display:none}
 .badge{background:var(--ink);color:#fff;border-radius:99px;font-size:11px;padding:1px 7px;margin-left:6px;font-weight:700}
-nav a.on .badge{background:var(--brand)}
+nav a.on .badge{background:#fff;color:var(--brand-d)}
 main{padding:22px 20px 60px;max-width:1360px;margin:0 auto}
 
 /* ---- controls ---- */
@@ -103,8 +103,8 @@ dialog::backdrop{background:rgba(10,20,14,.5);backdrop-filter:blur(2px)}
 
 /* ---- sign in ---- */
 main:has(.login){display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;max-width:none;
-  background:var(--brand)}
-.login{width:100%;max-width:380px;background:#fff;border-radius:20px;padding:28px 26px;box-shadow:0 12px 40px rgba(0,0,0,.25);margin:0}
+  background:var(--brand-l)}
+.login{width:100%;max-width:380px;background:#fff;border-radius:20px;padding:28px 26px;border:1px solid var(--line2);box-shadow:0 12px 40px rgba(31,109,17,.15);margin:0}
 .login input,.login select{font-size:16px;padding:11px 13px}
 .login button{width:100%;padding:12px;font-size:16px;margin-top:6px}
 .login .tag{color:var(--ink)}
@@ -177,7 +177,7 @@ body.customer main,.noselect{-webkit-user-select:none;user-select:none}
   #menu{display:block;font-size:20px;padding:4px 11px;border-radius:10px}
   nav{display:none;flex-basis:100%;order:5;flex-direction:column;gap:0;padding-top:6px}
   nav.open{display:flex}
-  nav a{padding:13px 12px;font-size:16px;border-radius:0;border-bottom:1px solid rgba(255,255,255,.25)}
+  nav a{padding:13px 12px;font-size:16px;border-radius:0;border-bottom:1px solid var(--line)}
   nav a.on{border-radius:8px}
   header .brand{flex:1}
   img.logo{height:36px;width:36px}
