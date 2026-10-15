@@ -602,7 +602,7 @@ function showLogin() {
   const mode = ['customer', 'delivery', 'admin'].includes(asParam) ? asParam : { '/admin': 'admin', '/delivery': 'delivery' }[location.pathname.replace(/\/+$/, '')] || 'customer';
   const title = { customer: 'Customer sign in', delivery: 'Delivery sign in', admin: 'Admin sign in' }[mode];
   const id = h('input', { type: 'text', placeholder: 'e.g. GRV001', autocapitalize: 'characters', autocomplete: 'username', required: true, value: localStorage.getItem('grv.cid') || '' });
-  const pw = h('input', { type: 'password', placeholder: mode === 'customer' ? 'Password (phone no. at first)' : 'Password', autocomplete: 'current-password', required: true });
+  const pw = h('input', { type: 'password', placeholder: 'Password', autocomplete: 'current-password', required: true });
   const form = h('form', { class: 'login form', onsubmit: guard(async (e) => {
     e.preventDefault();
     await api('login', 'POST', { role: mode, id: id.value, password: pw.value });
