@@ -88,7 +88,7 @@ pages.dashboard = async (v) => {
   const max = Math.max(1, ...d.daily.map((x) => x.total));
   const alerts = await api('cow-alerts');
   v.append(h('h1', {}, 'Dashboard'), h('p', { class: 'sub' }, monthLabel(S.month)),
-    alerts.length ? h('div', { class: 'card alerts' }, h('h2', { style: 'margin-top:0' }, '🐄 Cow reminders'), alerts.map((a) => aiAlert(a, () => render()))) : null,
+    alerts.length ? h('div', { class: 'card alerts' }, h('h2', { style: 'margin-top:0' }, '🐄 Cow reminders (AI & pregnancy)'), alerts.map((a) => aiAlert(a, () => render()))) : null,
     h('div', { class: 'cards' },
       [['Active Customers', `${d.active} / ${d.customers}`], ['Milk Sold', lit(d.litres) + ' L'], ['Total Sales', inr(d.sales)], ['Payments Collected', inr(d.collected)],
         ['Pending Amount', inr(d.pending), d.pending > 0 ? 'warn' : ''], ['Other Income', inr(d.other_income)], ['Expenses', inr(d.expenses)], ['Net Profit', inr(d.net), d.net >= 0 ? 'good' : 'bad'],
@@ -542,7 +542,9 @@ pages.portal = async (v) => {
       h('p', { class: 'tag' }, upTo ? `Updated up to ${dayLabel(upTo)}. Each day is added at ${d.update_hour > 12 ? d.update_hour - 12 : d.update_hour} ${d.update_hour >= 12 ? 'PM' : 'AM'}.` : `Not updated yet — each day is added at ${d.update_hour > 12 ? d.update_hour - 12 : d.update_hour} ${d.update_hour >= 12 ? 'PM' : 'AM'}.`),
       h('div', { class: 'hero' }, h('div', { class: 'l' }, d.due > 0 ? 'Amount due' : 'All settled'), h('div', { class: 'big' }, inr(Math.max(d.due, 0))),
         h('div', { class: 'row' }, h('div', {}, 'Milk so far', h('b', {}, lit(d.total) + ' L')), h('div', {}, 'Bill so far', h('b', {}, inr(d.amount))), h('div', {}, 'You paid', h('b', {}, inr(d.paid))), h('div', {}, 'Pending', h('b', {}, inr(Math.max(d.due, 0))))),
-        d.paid > 0 ? h('div', { class: 'thanks' }, d.due > 0 ? `🙏 Thank you for your payment of ${inr(d.paid)}! ${inr(d.due)} is still pending.` : '🙏 Thank you for your payment! Your bill is paid in full.') : null),
+        null),
+      d.paid > 0 ? h('div', { class: 'thanks' }, h('div', { class: 'tick' }, '✓'), h('div', {}, h('b', {}, d.due > 0 ? 'Thank you for your payment!' : 'Thank you! Your bill is paid in full.'),
+        h('div', { class: 'tag' }, d.due > 0 ? `We received ${inr(d.paid)}. ${inr(d.due)} is still pending.` : `We received ${inr(d.paid)}. Nothing is pending.`))) : null,
       h('div', { class: 'tablewrap noselect' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Morning', 'Evening', 'Litres'].map((t, i) => h('th', { class: i ? 'n' : '' }, t)))), h('tbody', {}, rows),
         h('tfoot', {}, h('tr', {}, h('td', {}, 'Total'), h('td', { class: 'n' }, lit(d.am)), h('td', { class: 'n' }, lit(d.pm)), h('td', { class: 'n' }, lit(d.total)))))),
       d.payments.length ? h('div', {}, h('h2', {}, 'Payments received'), h('div', { class: 'tablewrap' }, h('table', {}, h('tbody', {}, d.payments.map((p) => h('tr', {}, h('td', {}, p.date), h('td', {}, p.mode || ''), h('td', { class: 'n' }, inr(p.amount))))))))  : null,
@@ -609,7 +611,7 @@ async function render() {
   let cowBadge = 0;
   if (admin) { try { cowBadge = (await api('cow-alerts')).length; } catch {} }
   const links = admin ? NAV : role === 'delivery' ? DELIVERY_NAV : [];
-  for (const [k, l] of links) nav.append(h('a', { href: '#/' + k, class: k === page || (page === 'bill' && k === 'bills') ? 'on' : '' }, l, k === 'notices' && badge ? h('span', { class: 'badge' }, badge) : null, k === 'cows' && cowBadge ? h('span', { class: 'badge' }, cowBadge) : null));
+  for (const [k, l] of links) nav.append(h('a', { href: '#/' + k, class: k === page || (page === 'bill' && k === 'bills') ? 'on' : '' }, l, k === 'notices' && badge ? h('span', { class: 'badge' }, badge) : null, k === 'cows' && cowBadge ? h('span', { class: 'badge cow' }, cowBadge) : null));
   $('#menu').hidden = !links.length; $('.month').hidden = !admin;
   $('#who').textContent = { admin: 'Admin', delivery: 'Delivery', customer: S.user.cid }[role];
   document.body.classList.toggle('customer', role === 'customer');

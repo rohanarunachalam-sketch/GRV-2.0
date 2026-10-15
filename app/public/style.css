@@ -244,4 +244,17 @@ body.customer .bar .seg{width:100%}
 .airow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px}
 .alerts{margin-bottom:14px}
 .aialert{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line)}
-.hero .thanks{margin-top:12px;padding:9px 12px;border-radius:10px;background:rgba(255,255,255,.18);font-weight:600;font-size:14px}
+/* thank-you note under the bill summary (customer) */
+.thanks{display:flex;gap:12px;align-items:center;background:var(--brand-l);border:1px solid var(--line2);border-left:5px solid var(--brand);border-radius:12px;padding:12px 14px;margin:0 0 14px}
+.thanks .tick{flex:none;width:34px;height:34px;border-radius:50%;background:var(--brand);color:#fff;display:grid;place-items:center;font-weight:800;font-size:18px}
+.thanks b{color:var(--brand-d);font-size:15px}
+/* cow reminders are amber so they never look like customer requests (which stay dark/green) */
+:root{--cow:#b45309;--cow-l:#fff4e0;--cow-line:#f3cf8f}
+.card.alerts{background:var(--cow-l);border:1px solid var(--cow-line);border-left:5px solid var(--cow)}
+.card.alerts h2{color:var(--cow)}
+.aialert{border-top-color:var(--cow-line);color:#5a3204}
+.aialert button{background:var(--cow);color:#fff;border-color:var(--cow)}
+.aialert button:hover{background:#92400e}
+.badge.cow{background:var(--cow);color:#fff}
+nav a.on .badge.cow{background:#fff;color:var(--cow)}
+.aicard{border-left:4px solid var(--cow)}
