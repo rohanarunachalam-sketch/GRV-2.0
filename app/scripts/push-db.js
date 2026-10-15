@@ -19,7 +19,8 @@ const TABLES = ['customers', 'deliveries', 'payments', 'income', 'expenses', 'co
   }
   await dst.executeMultiple(require('../lib/core').SCHEMA);
   for (const t of TABLES) {
-    const rs = await src.execute(`SELECT * FROM ${t}`);
+    let rs;
+    try { rs = await src.execute(`SELECT * FROM ${t}`); } catch (e) { if (/no such table/.test(e.message)) { console.log(t.padEnd(12), 'not in local db, skipped'); continue; } throw e; }
     await dst.execute(`DELETE FROM ${t}`);
     if (!rs.rows.length) { console.log(t.padEnd(12), 0); continue; }
     const stmts = rs.rows.map((r) => ({ sql: `INSERT INTO ${t}(${rs.columns.join(',')}) VALUES(${rs.columns.map(() => '?').join(',')})`, args: rs.columns.map((_, i) => r[i]) }));
