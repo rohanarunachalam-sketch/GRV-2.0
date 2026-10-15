@@ -244,3 +244,4 @@ body.customer .bar .seg{width:100%}
 .airow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px}
 .alerts{margin-bottom:14px}
 .aialert{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line)}
+.hero .thanks{margin-top:12px;padding:9px 12px;border-radius:10px;background:rgba(255,255,255,.18);font-weight:600;font-size:14px}
