@@ -250,17 +250,17 @@ pages.bills = async (v) => {
     const rs = rows.filter((r) => !filter || (r.name + r.id).toLowerCase().includes(filter.toLowerCase()));
     holder.append(table([
       { label: 'ID', key: 'id' }, { label: 'Customer', render: (r) => h('span', {}, r.name, r.bill_name ? h('div', { class: 'tag' }, 'Bill name: ' + r.bill_name) : null) }, { label: 'Phone', key: 'phone' }, { label: 'AM L', num: 1, render: (r) => lit(r.am) }, { label: 'PM L', num: 1, render: (r) => lit(r.pm) },
-      { label: 'Total L', num: 1, render: (r) => lit(r.total) }, { label: 'Price/L', num: 1, render: (r) => lit(r.price) }, { label: 'Bill', num: 1, render: (r) => inr(r.amount) },
+      { label: 'Total L', num: 1, render: (r) => lit(r.total) }, { label: 'Price/L', num: 1, render: (r) => lit(r.price) }, { label: 'Milk', num: 1, render: (r) => inr(r.milk_amount) }, { label: 'Extras', num: 1, render: (r) => (r.extras_amount ? inr(r.extras_amount) : '–') }, { label: 'Bill', num: 1, render: (r) => inr(r.amount) },
       { label: 'Paid', num: 1, render: (r) => inr(r.paid) }, { label: 'Pending', num: 1, render: (r) => h('span', { class: r.pending > 0 ? 'bad' : '' }, inr(r.pending)) }, { label: 'Status', render: (r) => pill(r.pay_status) },
       { label: '', render: (r) => h('span', {}, h('a', { href: `#/bill/${r.id}` }, h('button', { class: 'link' }, 'Bill')), h('button', { class: 'link', onclick: () => payFor(r) }, 'Payment')) },
-    ], rs, { foot: ['', 'Total', '', lit(sum('am')), lit(sum('pm')), lit(sum('total')), '', inr(sum('amount')), inr(sum('paid')), inr(sum('pending')), '', ''] }));
+    ], rs, { foot: ['', 'Total', '', lit(sum('am')), lit(sum('pm')), lit(sum('total')), '', inr(sum('milk_amount')), inr(sum('extras_amount')), inr(sum('amount')), inr(sum('paid')), inr(sum('pending')), '', ''] }));
   };
   // Payment dialog: shows what the customer bought and owes; the amount is pre-filled with the pending balance but can be changed.
   const payFor = guard(async (r) => {
     const paid = (await api('payments?month=' + S.month)).filter((p) => p.customer_id === r.id);
     const line = (l, val, cls = '') => h('div', { class: 'payrow ' + cls }, h('span', {}, l), h('b', {}, val));
     const intro = h('div', { class: 'payinfo' }, h('div', { class: 'tag' }, `${r.id} · ${monthLabel(S.month)}`),
-      line('Total milk bought', lit(r.total) + ' L'), line('Bill amount', inr(r.amount)), line('Already paid', inr(r.paid)), line('Pending', inr(Math.max(r.pending, 0)), 'big'),
+      line('Total milk bought', lit(r.total) + ' L'), r.extras_amount ? line('Milk amount', inr(r.milk_amount)) : null, r.extras_amount ? line('Extras delivered (egg, curd...)', inr(r.extras_amount)) : null, line('Bill amount', inr(r.amount)), line('Already paid', inr(r.paid)), line('Pending', inr(Math.max(r.pending, 0)), 'big'),
       paid.length ? h('div', { class: 'paid-list' }, h('div', { class: 'tag' }, 'Payments received'), paid.map((p) => h('div', { class: 'payrow' }, h('span', {}, `${p.date}${p.mode ? ' · ' + p.mode : ''}`),
         h('span', {}, h('b', {}, inr(p.amount)), h('button', { type: 'button', class: 'link del', onclick: guard(async () => { if (!confirm(`Delete this ${inr(p.amount)} payment?`)) return; await api('payments/' + p.id, 'DELETE'); toast('Payment deleted'); $('#dlg').close(); render(); }) }, 'Delete'))))) : null);
     openForm({ title: `Payment — ${r.name}`, intro, saveLabel: 'OK', fields: [
@@ -286,7 +286,8 @@ function invoice(b) {
     h('div', { class: 'inv-head' }, h('img', { src: 'logo.png', alt: 'GRV Dairy' }), h('div', { class: 'inv-title' }, h('h1', {}, 'MILK BILL'), h('div', {}, 'Bill no: ', h('b', {}, b.bill_no)), h('div', {}, 'Month: ', h('b', {}, monthLabel(b.month))), h('div', {}, 'Date: ', h('b', {}, new Date().toLocaleDateString('en-IN'))))),
     h('div', { class: 'inv-to' }, h('div', { class: 'tag' }, 'Bill to'), h('b', { style: 'font-size:18px' }, b.bill_name || b.name), h('div', {}, b.id + (b.phone ? ' · ' + b.phone : ''))),
     h('div', { class: 'inv-cols' }, dayTable(b.days.slice(0, half)), dayTable(b.days.slice(half))),
-    h('table', { class: 'inv-sum' }, h('tbody', {}, row('Morning (AM) litres', lit(b.am) + ' L'), row('Evening (PM) litres', lit(b.pm) + ' L'), row('Total litres', lit(b.total) + ' L', 'b'), row('Rate per litre', inr(b.price)),
+    h('table', { class: 'inv-sum' }, h('tbody', {}, row('Morning (AM) litres', lit(b.am) + ' L'), row('Evening (PM) litres', lit(b.pm) + ' L'), row('Total litres', lit(b.total) + ' L', 'b'), row('Rate per litre', inr(b.price)), b.extras.length ? row('Milk amount', inr(b.milk_amount)) : null,
+      ...b.extras.map((x) => row(`${x.product || 'Item'} — ${qtyText(x.qty, x.unit)} × ${inr(x.price)} (${new Date(x.date + 'T00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })})`, inr(x.qty * x.price))),
       ...b.payments.map((p) => row(`Paid on ${new Date(p.date + 'T00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}${p.mode ? ' (' + p.mode + ')' : ''}`, inr(p.amount), 'paid')),
       b.payments.length ? row(b.pending > 0 ? 'Balance due' : 'Balance', b.pending > 0 ? inr(b.pending) : 'Paid in full', 'bal') : null,
       row('Total amount', inr(b.amount), 'total'))),
@@ -294,7 +295,7 @@ function invoice(b) {
 }
 const waLink = (b) => {
   let ph = (b.phone || '').replace(/\D/g, ''); if (ph.length === 10) ph = '91' + ph;
-  const t = `GRV Dairy — ${monthLabel(b.month)} milk bill\n${b.bill_name || b.name}\n${lit(b.total)} L × ${inr(b.price)} = ${inr(b.amount)}\n` + (b.paid ? `Paid: ${inr(b.paid)}\n` : '') + (b.pending > 0 ? `Amount due: ${inr(b.pending)}` : 'No balance due. Thank you!');
+  const t = `GRV Dairy — ${monthLabel(b.month)} milk bill\n${b.bill_name || b.name}\n${lit(b.total)} L × ${inr(b.price)} = ${inr(b.milk_amount)}\n` + (b.extras_amount ? `Extras: ${inr(b.extras_amount)}\nTotal: ${inr(b.amount)}\n` : '') + (b.paid ? `Paid: ${inr(b.paid)}\n` : '') + (b.pending > 0 ? `Amount due: ${inr(b.pending)}` : 'No balance due. Thank you!');
   return `https://wa.me/${ph}?text=${encodeURIComponent(t)}`;
 };
 pages.bill = async (v, arg) => {
@@ -658,7 +659,7 @@ pages.portal = async (v) => {
         h('tfoot', {}, h('tr', {}, h('td', {}, 'Total'), h('td', { class: 'n' }, lit(d.am)), h('td', { class: 'n' }, lit(d.pm)), h('td', { class: 'n' }, lit(d.total)))))),
       d.extras.length ? h('div', {}, h('h2', {}, 'Extras delivered'), h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Item', 'Qty', 'Amount'].map((t, i) => h('th', { class: i > 1 ? 'n' : '' }, t)))),
         h('tbody', {}, d.extras.map((x) => h('tr', {}, h('td', {}, dayLabel(x.date)), h('td', {}, x.product || 'Item'), h('td', { class: 'n' }, qtyText(x.qty, x.unit)), h('td', { class: 'n' }, inr(x.qty * x.price))))),
-        h('tfoot', {}, h('tr', {}, h('td', { colspan: 3 }, 'Extras total'), h('td', { class: 'n' }, inr(d.extras_total))))))) : null,
+        h('tfoot', {}, h('tr', {}, h('td', { colspan: 3 }, 'Extras total (included in your bill)'), h('td', { class: 'n' }, inr(d.extras_total))))))) : null,
       d.payments.length ? h('div', {}, h('h2', {}, 'Payments received'), h('div', { class: 'tablewrap' }, h('table', {}, h('tbody', {}, d.payments.map((p) => h('tr', {}, h('td', {}, p.date), h('td', {}, p.mode || ''), h('td', { class: 'n' }, inr(p.amount))))))))  : null,
       h('p', { class: 'tag' }, `Rate: ${inr(d.customer.price)} per litre.`));
   } else if (P.tab === 'shop') {

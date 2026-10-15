@@ -120,14 +120,20 @@ async function monthData(month) {
   return { customers, n, eff, ov, skipSet };
 }
 
+// delivered extras (egg, curd, ghee...) of a month, counted in the month they were marked delivered
+const extrasIn = (month, cid) => all(`SELECT o.id, o.customer_id, o.qty, o.price, COALESCE(o.delivered_on, o.date) AS date, p.name AS product, p.unit FROM product_orders o LEFT JOIN products p ON p.id=o.product_id
+  WHERE o.status='Delivered' AND COALESCE(o.delivered_on, o.date) BETWEEN ? AND ?${cid ? ' AND o.customer_id=?' : ''} ORDER BY 4, o.id`, cid ? [dateStr(month, 1), monthEnd(month), cid] : [dateStr(month, 1), monthEnd(month)]);
+
 async function bills(month) {
   const { customers, n, eff } = await monthData(month);
+  const extra = new Map();
+  for (const x of await extrasIn(month)) extra.set(x.customer_id, (extra.get(x.customer_id) || 0) + x.qty * x.price);
   const paid = new Map((await all('SELECT customer_id, SUM(amount) t FROM payments WHERE bill_month=? GROUP BY customer_id', [month])).map((r) => [r.customer_id, r.t]));
   return customers.map((c) => {
     let am = 0, pm = 0;
     for (let d = 1; d <= n; d++) { const ds = dateStr(month, d); am += eff(c, ds, 'AM'); pm += eff(c, ds, 'PM'); }
-    const total = am + pm, amount = r2(total * c.price), p = paid.get(c.id) || 0, pending = r2(amount - p);
-    return { id: c.id, name: c.name, bill_name: c.bill_name || '', phone: c.phone, status: c.status, am: r2(am), pm: r2(pm), total: r2(total), price: c.price, amount, paid: r2(p), pending,
+    const total = am + pm, milk_amount = r2(total * c.price), extras_amount = r2(extra.get(c.id) || 0), amount = r2(milk_amount + extras_amount), p = paid.get(c.id) || 0, pending = r2(amount - p);
+    return { id: c.id, name: c.name, bill_name: c.bill_name || '', phone: c.phone, status: c.status, am: r2(am), pm: r2(pm), total: r2(total), price: c.price, milk_amount, extras_amount, amount, paid: r2(p), pending,
       pay_status: amount === 0 && p === 0 ? '-' : pending <= 0 ? 'Paid' : p > 0 ? 'Part Paid' : 'Pending' };
   });
 }
@@ -230,9 +236,9 @@ route('GET', '/api/daily', ({ q }) => daily(validMonth(q.month)));
 route('GET', '/api/bills', ({ q }) => bills(validMonth(q.month)));
 route('GET', '/api/bills.csv', async ({ q }) => {
   const rows = await bills(validMonth(q.month));
-  const head = ['Customer ID', 'Customer Name', 'Phone', 'AM Litres', 'PM Litres', 'Total Litres', 'Price/L', 'Bill Amount', 'Paid', 'Pending', 'Status'];
+  const head = ['Customer ID', 'Customer Name', 'Phone', 'AM Litres', 'PM Litres', 'Total Litres', 'Price/L', 'Milk Amount', 'Extras Amount', 'Bill Amount', 'Paid', 'Pending', 'Status'];
   const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const csv = [head, ...rows.map((r) => [r.id, r.name, r.phone, r.am, r.pm, r.total, r.price, r.amount, r.paid, r.pending, r.pay_status])].map((r) => r.map(esc).join(',')).join('\r\n');
+  const csv = [head, ...rows.map((r) => [r.id, r.name, r.phone, r.am, r.pm, r.total, r.price, r.milk_amount, r.extras_amount, r.amount, r.paid, r.pending, r.pay_status])].map((r) => r.map(esc).join(',')).join('\r\n');
   return { __raw: '﻿' + csv, type: 'text/csv; charset=utf-8', filename: `GRV_bills_${q.month}.csv` };
 });
 
@@ -245,11 +251,11 @@ route('GET', '/api/bill', async ({ q }) => {
   for (const c of customers) {
     if (q.id && c.id !== q.id) continue;
     const b = summary.get(c.id);
-    if (!q.id && b.total === 0 && b.paid === 0) continue;
+    if (!q.id && b.total === 0 && b.paid === 0 && b.extras_amount === 0) continue;
     const days = [];
     for (let d = 1; d <= n; d++) { const ds = dateStr(month, d); days.push({ date: ds, am: eff(c, ds, 'AM'), pm: eff(c, ds, 'PM') }); }
     const payments = await all('SELECT date, amount, mode FROM payments WHERE customer_id=? AND bill_month=? ORDER BY date', [c.id, month]);
-    out.push({ ...b, month, days, payments, bill_no: `${c.id}-${month.replace('-', '')}` });
+    out.push({ ...b, month, days, payments, extras: await extrasIn(month, c.id), bill_no: `${c.id}-${month.replace('-', '')}` });
   }
   need(!q.id || out.length, 'customer not found');
   return out;
@@ -551,10 +557,9 @@ route('GET', '/api/portal', async ({ q, user }) => {
   const payments = await all('SELECT date, amount, mode FROM payments WHERE customer_id=? AND bill_month=? ORDER BY date', [cid, month]);
   const paid = payments.reduce((a, x) => a + x.amount, 0), amount = r2((am + pm) * c.price);
   const skips = (await all("SELECT k.*, ? AS name FROM skips k WHERE customer_id=? AND status='active' AND to_date >= ? ORDER BY from_date", [c.bill_name || '', cid, today()])).map(skipRow);
-  const extras = await all(`SELECT o.id, o.qty, o.price, COALESCE(o.delivered_on, o.date) AS date, p.name AS product, p.unit FROM product_orders o LEFT JOIN products p ON p.id=o.product_id
-    WHERE o.customer_id=? AND o.status='Delivered' AND COALESCE(o.delivered_on, o.date) BETWEEN ? AND ? ORDER BY 4, o.id`, [cid, dateStr(month, 1), monthEnd(month)]);
+  const extras = await extrasIn(month, cid), extras_total = r2(extras.reduce((t, x) => t + x.qty * x.price, 0)), milk_amount = amount;
   return { customer: { id: c.id, name: c.bill_name || '', price: c.price, am: c.am, pm: c.pm }, needs_name: !c.bill_name, month, cutoff, update_hour: BILL_HOUR, today: today(), tomorrow: tomorrow(),
-    extras, extras_total: r2(extras.reduce((t, x) => t + x.qty * x.price, 0)), days, am: r2(am), pm: r2(pm), total: r2(am + pm), amount, paid: r2(paid), due: r2(amount - paid), payments, skips,
+    extras, extras_total, milk_amount, days, am: r2(am), pm: r2(pm), total: r2(am + pm), amount: r2(amount + extras_total), paid: r2(paid), due: r2(amount + extras_total - paid), payments, skips,
     default_password: !(await get('SELECT 1 x FROM customer_auth WHERE customer_id=?', [cid])) };
 });
 route('PUT', '/api/portal/password', async ({ body, user }) => {
