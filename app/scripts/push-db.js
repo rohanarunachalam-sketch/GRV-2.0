@@ -17,7 +17,9 @@ const TABLES = ['customers', 'deliveries', 'payments', 'income', 'expenses', 'co
     const n = (await dst.execute('SELECT COUNT(*) n FROM customers')).rows[0][0];
     if (n > 0 && !process.argv.includes('--force')) { console.error(`Turso already has ${n} customers. Re-run with --force to overwrite.`); process.exit(1); }
   }
-  await dst.executeMultiple(require('../lib/core').SCHEMA);
+  const { SCHEMA } = require('../lib/core');
+  await src.executeMultiple(SCHEMA); // adds tables an older local database is missing (additive only)
+  await dst.executeMultiple(SCHEMA);
   for (const t of TABLES) {
     let rs;
     try { rs = await src.execute(`SELECT * FROM ${t}`); } catch (e) { if (/no such table/.test(e.message)) { console.log(t.padEnd(12), 'not in local db, skipped'); continue; } throw e; }
