@@ -503,7 +503,7 @@ route('PUT', '/api/portal/name', async ({ body, user }) => { // the name that ap
 });
 route('POST', '/api/portal/skips', async ({ body, user }) => {
   validDate(body.from); validDate(body.to);
-  need(body.from >= tomorrow(), 'Requests must start from tomorrow. For today, please call us.');
+  need(body.from >= today(), 'Requests cannot start in the past');
   need(body.to >= body.from, 'End date is before the start date');
   need(addDays(body.from, 59) >= body.to, 'You can skip up to 60 days at a time');
   need(['AM', 'PM', 'BOTH'].includes(body.session), 'Choose morning, evening or both');

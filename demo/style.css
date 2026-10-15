@@ -347,3 +347,15 @@ body.customer .bar .seg{width:100%}
   @page{size:A4;margin:12mm}
 }
 
+/* ---- customer monthly calendar ---- */
+.cal{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin:0 0 6px;box-shadow:var(--shadow)}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.cal-w{text-align:center;font-size:11px;font-weight:700;color:var(--mute);text-transform:uppercase;letter-spacing:.06em;padding-bottom:4px}
+.cal-d{aspect-ratio:1;max-height:52px;display:grid;place-items:center;border-radius:10px;font-weight:600;font-size:14px;font-variant-numeric:tabular-nums;background:#f3f6f3;color:var(--mute)}
+.cal-d.ok{background:#dcf2e3;color:#14663a}
+.cal-d.pause{background:#fdeeba;color:#8a5a00}
+.cal-d.out{background:#fbd5d0;color:#a3261b}
+.cal-key{display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;font-size:12.5px;color:var(--mute);font-weight:600}
+.cal-key span{display:inline-flex;align-items:center;gap:7px}
+.cal-key span::before{content:"";width:14px;height:14px;border-radius:5px}
+.cal-key .ok::before{background:#4fb36f}.cal-key .pause::before{background:#f2c230}.cal-key .out::before{background:#e5584a}

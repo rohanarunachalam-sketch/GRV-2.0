@@ -544,7 +544,7 @@ pages.portal = async (v) => {
 
   if (P.tab === 'bill') {
     const upTo = d.cutoff < d.month + '-01' ? null : d.cutoff;
-    const rows = d.days.map((x) => h('tr', { class: x.am === null ? 'mute' : x.am + x.pm === 0 ? 'zero' : '' }, h('td', {}, dayLabel(x.date)), h('td', { class: 'n' }, x.am === null ? '–' : x.am ? lit(x.am) : '0'), h('td', { class: 'n' }, x.pm === null ? '–' : x.pm ? lit(x.pm) : '0'), h('td', { class: 'n' }, x.am === null ? '–' : lit(x.am + x.pm)), h('td', {}, x.st ? h('span', { class: 'pill ' + x.st }, x.st === 'Unavailable' ? 'Milk Unavailable' : x.st) : '')));
+    const rows = d.days.map((x) => h('tr', { class: x.am === null ? 'mute' : x.am + x.pm === 0 ? 'zero' : '' }, h('td', {}, dayLabel(x.date)), h('td', { class: 'n' }, x.am === null ? '–' : x.am ? lit(x.am) : '0'), h('td', { class: 'n' }, x.pm === null ? '–' : x.pm ? lit(x.pm) : '0'), h('td', { class: 'n' }, x.am === null ? '–' : lit(x.am + x.pm))));
     const m = h('input', { type: 'month', value: d.month, max: d.today.slice(0, 7), onchange: (e) => { if (e.target.value) { P.month = e.target.value; again(); } } });
     v.append(h('div', { class: 'bar' }, h('label', { class: 'tag' }, 'Month ', m)),
       h('p', { class: 'tag' }, upTo ? `Updated up to ${dayLabel(upTo)}. Each day is added at ${d.update_hour > 12 ? d.update_hour - 12 : d.update_hour} ${d.update_hour >= 12 ? 'PM' : 'AM'}.` : `Not updated yet — each day is added at ${d.update_hour > 12 ? d.update_hour - 12 : d.update_hour} ${d.update_hour >= 12 ? 'PM' : 'AM'}.`),
@@ -553,17 +553,19 @@ pages.portal = async (v) => {
         null),
       d.paid > 0 ? h('div', { class: 'thanks' }, h('div', { class: 'tick' }, '✓'), h('div', {}, h('b', {}, d.due > 0 ? 'Thank you for your payment!' : 'Thank you! Your bill is paid in full.'),
         h('div', { class: 'tag' }, d.due > 0 ? `We received ${inr(d.paid)}. ${inr(d.due)} is still pending.` : `We received ${inr(d.paid)}. Nothing is pending.`))) : null,
-      h('div', { class: 'tablewrap noselect' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Morning', 'Evening', 'Litres', 'Status'].map((t, i) => h('th', { class: i && i < 4 ? 'n' : '' }, t)))), h('tbody', {}, rows),
-        h('tfoot', {}, h('tr', {}, h('td', {}, 'Total'), h('td', { class: 'n' }, lit(d.am)), h('td', { class: 'n' }, lit(d.pm)), h('td', { class: 'n' }, lit(d.total)), h('td', {}))))),
+      monthCalendar(d),
+      h('h2', {}, 'Daily details'),
+      h('div', { class: 'tablewrap noselect' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Morning', 'Evening', 'Litres'].map((t, i) => h('th', { class: i ? 'n' : '' }, t)))), h('tbody', {}, rows),
+        h('tfoot', {}, h('tr', {}, h('td', {}, 'Total'), h('td', { class: 'n' }, lit(d.am)), h('td', { class: 'n' }, lit(d.pm)), h('td', { class: 'n' }, lit(d.total)))))),
       d.payments.length ? h('div', {}, h('h2', {}, 'Payments received'), h('div', { class: 'tablewrap' }, h('table', {}, h('tbody', {}, d.payments.map((p) => h('tr', {}, h('td', {}, p.date), h('td', {}, p.mode || ''), h('td', { class: 'n' }, inr(p.amount))))))))  : null,
       h('p', { class: 'tag' }, `Rate: ${inr(d.customer.price)} per litre.`));
   } else if (P.tab === 'skip') {
-    const f = h('input', { type: 'date', value: d.tomorrow, min: d.tomorrow, required: true }), t = h('input', { type: 'date', value: d.tomorrow, min: d.tomorrow, required: true });
+    const f = h('input', { type: 'date', value: d.tomorrow, min: d.today, required: true }), t = h('input', { type: 'date', value: d.tomorrow, min: d.today, required: true });
     f.addEventListener('change', () => { if (t.value < f.value) t.value = f.value; t.min = f.value; });
     const ses = h('select', {}, h('option', { value: 'AM' }, 'Morning'), h('option', { value: 'PM' }, 'Evening'), h('option', { value: 'BOTH' }, 'Morning & Evening'));
     const note = h('input', { type: 'text', placeholder: 'Optional note (e.g. out of town)', maxlength: 200 });
     v.append(h('form', { class: 'form card', onsubmit: guard(async (e) => { e.preventDefault(); await api('portal/skips', 'POST', { from: f.value, to: t.value, session: ses.value, note: note.value }); toast('Sent to the delivery team'); again(); }) },
-      h('h2', { style: 'margin-top:0' }, "I don't need milk"), h('p', { class: 'tag' }, 'Your delivery boy and the admin are notified. You are not billed for the days you skip. For today, please call us.'),
+      h('h2', { style: 'margin-top:0' }, "I don't need milk"), h('p', { class: 'tag' }, 'Your delivery boy and the admin are notified. You are not billed for the days you skip. You can pause from today too.'),
       h('label', {}, 'From', f), h('label', {}, 'To (last day)', t), h('label', {}, 'Which delivery', ses), h('label', {}, 'Note', note), h('button', { class: 'pri', type: 'submit' }, 'Send request')),
       h('h2', {}, 'Your requests'),
       d.skips.length ? h('div', { class: 'cards-list' }, d.skips.map((k) => h('div', { class: 'rcard' }, h('div', { class: 'rname' }, k.from === k.to ? dayLabel(k.from) : `${dayLabel(k.from)} → ${dayLabel(k.to)}`), h('div', { class: 'tag' }, { AM: 'Morning', PM: 'Evening', BOTH: 'Morning & Evening' }[k.session] + (k.note ? ' · ' + k.note : '')),
@@ -577,6 +579,16 @@ pages.portal = async (v) => {
 };
 
 // ---------- router ----------
+// Monthly calendar: each date coloured by its status (green = delivered, yellow = paused, red = milk unavailable).
+function monthCalendar(d) {
+  const first = new Date(d.month + '-01T00:00:00'), lead = (first.getDay() + 6) % 7; // Monday first
+  const cells = [...Array(lead).fill(null), ...d.days];
+  const cls = { Delivered: 'ok', Paused: 'pause', Unavailable: 'out' };
+  return h('div', { class: 'cal noselect' },
+    h('div', { class: 'cal-grid' }, ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((w) => h('div', { class: 'cal-w' }, w)),
+      cells.map((x) => x ? h('div', { class: 'cal-d ' + (cls[x.st] || ''), title: x.st ? (x.st === 'Unavailable' ? 'Milk Unavailable' : x.st) : '' }, Number(x.date.slice(8))) : h('div', {}))),
+    h('div', { class: 'cal-key' }, h('span', { class: 'ok' }, 'Delivered'), h('span', { class: 'pause' }, 'Paused'), h('span', { class: 'out' }, 'Milk Unavailable')));
+}
 const NAV = [['dashboard', 'Dashboard'], ['delivery', 'Delivery'], ['notices', 'Notices'], ['daily', 'Daily Summary'], ['bills', 'Bills'], ['customers', 'Customers'], ['income', 'Income'], ['expenses', 'Expenses'], ['pnl', 'P&L'], ['cows', 'Cows'], ['yield', 'Cow Yield'], ['settings', 'Settings']];
 const DELIVERY_NAV = [['delivery', 'Deliveries'], ['notices', 'Notices']];
 const hdr = $('header');
