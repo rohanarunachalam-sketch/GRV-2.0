@@ -478,7 +478,7 @@ route('GET', '/api/portal', async ({ q, user }) => {
     if (ds > cutoff) { days.push({ date: ds, am: null, pm: null }); continue; } // not yet updated
     const a = eff(c, ds, 'AM'), p = eff(c, ds, 'PM'); am += a; pm += p;
     // display-only status for the customer's calendar: Delivered / Paused / Milk Unavailable
-    const st = (unv.has(ds + '|AM') && a === 0) || (unv.has(ds + '|PM') && p === 0) ? 'Unavailable' : a + p > 0 ? 'Delivered' : 'Paused';
+    const st = (unv.has(ds + '|AM') && a === 0) || (unv.has(ds + '|PM') && p === 0) ? 'Unavailable' : (a === 0 && c.status === 'Active' && c.am > 0) || (p === 0 && c.status === 'Active' && c.pm > 0) || a + p === 0 ? 'Paused' : 'Delivered'; // a paused morning OR evening shows the day as Paused
     days.push({ date: ds, am: a, pm: p, st });
   }
   const payments = await all('SELECT date, amount, mode FROM payments WHERE customer_id=? AND bill_month=? ORDER BY date', [cid, month]);
