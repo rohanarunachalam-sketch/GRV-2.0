@@ -746,17 +746,23 @@ async function render() {
   if (role === 'customer') page = 'portal';
   else if (role === 'delivery') page = hashPage === 'notices' ? 'notices' : 'delivery';
   else page = hashPage || 'dashboard';
-  let badge = 0;
-  if (role !== 'customer') { try { const n = await api('notices'); badge = n.items.filter((k) => k.from <= n.today).length; } catch {} }
-  let cowBadge = 0;
-  if (admin) { try { cowBadge = (await api('cow-alerts')).length; } catch {} }
+  // the red count bubbles load in the background so they never hold the page up
+  const badgeP = Promise.all([
+    role !== 'customer' ? api('notices').then((n) => n.items.filter((k) => k.from <= n.today).length, () => 0) : 0,
+    admin ? api('cow-alerts').then((a) => a.length, () => 0) : 0]);
   const links = admin ? NAV : role === 'delivery' ? DELIVERY_NAV : [];
-  for (const [k, l] of links) nav.append(h('a', { href: '#/' + k, class: k === page || (page === 'bill' && k === 'bills') ? 'on' : '' }, l, k === 'notices' && badge ? h('span', { class: 'badge' }, badge) : null, k === 'cows' && cowBadge ? h('span', { class: 'badge cow' }, cowBadge) : null));
+  for (const [k, l] of links) nav.append(h('a', { href: '#/' + k, class: k === page || (page === 'bill' && k === 'bills') ? 'on' : '' }, l));
   $('#menu').hidden = !links.length; $('.month').hidden = !admin;
   $('#who').textContent = { admin: 'Admin', delivery: 'Delivery', customer: S.user.cid }[role];
   document.body.classList.toggle('customer', role === 'customer');
   const v = $('#view'); v.innerHTML = '';
   v.append = (...kids) => Element.prototype.append.apply(v, kids.flat().filter((k) => k != null && k !== false)); // pages may pass null for "nothing"
+  badgeP.then(([badge, cowBadge]) => {
+    for (const a of nav.children) {
+      const k = a.getAttribute('href').slice(2);
+      if (k === 'notices' && badge) a.append(h('span', { class: 'badge' }, badge)); else if (k === 'cows' && cowBadge) a.append(h('span', { class: 'badge cow' }, cowBadge));
+    }
+  });
   try { S.lists = S.lists || (admin ? await api('lists') : {}); await (pages[page] || pages.dashboard)(v, arg); }
   catch (e) { if (S.user) v.append(h('p', { class: 'bad' }, 'Error: ' + e.message)); }
 }

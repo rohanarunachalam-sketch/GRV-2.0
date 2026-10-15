@@ -102,13 +102,16 @@ const sessionsOf = (s) => (s === 'BOTH' ? ['AM', 'PM'] : [s]);
 
 // Effective quantity: explicit entry wins (0 = no delivery); blank = default for Active customers.
 async function monthData(month) {
-  const customers = await all('SELECT * FROM customers ORDER BY id');
+  const [customers, dels, skipRows] = await Promise.all([ // asked together, so the wait is one round trip instead of three (matters on a remote database)
+    all('SELECT * FROM customers ORDER BY id'),
+    all('SELECT * FROM deliveries WHERE date >= ? AND date <= ?', [dateStr(month, 1), monthEnd(month)]),
+    all("SELECT * FROM skips WHERE status='active' AND from_date <= ? AND to_date >= ?", [monthEnd(month), dateStr(month, 1)])]);
   const ov = new Map();
-  for (const r of await all('SELECT * FROM deliveries WHERE date >= ? AND date <= ?', [dateStr(month, 1), monthEnd(month)])) ov.set(`${r.customer_id}|${r.date}|${r.session}`, r.qty);
+  for (const r of dels) ov.set(`${r.customer_id}|${r.date}|${r.session}`, r.qty);
   const n = daysIn(month);
   // customer "no milk" requests: an explicit delivery entry still wins; otherwise a skipped session counts as 0
   const skipSet = new Set();
-  for (const k of await all("SELECT * FROM skips WHERE status='active' AND from_date <= ? AND to_date >= ?", [monthEnd(month), dateStr(month, 1)]))
+  for (const k of skipRows)
     for (let d = Math.max(k.from_date < dateStr(month, 1) ? 1 : Number(k.from_date.slice(8)), 1); d <= (k.to_date > monthEnd(month) ? n : Number(k.to_date.slice(8))); d++)
       for (const s of sessionsOf(k.session)) skipSet.add(`${k.customer_id}|${dateStr(month, d)}|${s}`);
   const eff = (c, date, s) => {
@@ -125,10 +128,10 @@ const extrasIn = (month, cid) => all(`SELECT o.id, o.customer_id, o.qty, o.price
   WHERE o.status='Delivered' AND COALESCE(o.delivered_on, o.date) BETWEEN ? AND ?${cid ? ' AND o.customer_id=?' : ''} ORDER BY 4, o.id`, cid ? [dateStr(month, 1), monthEnd(month), cid] : [dateStr(month, 1), monthEnd(month)]);
 
 async function bills(month) {
-  const { customers, n, eff } = await monthData(month);
+  const [{ customers, n, eff }, extraRows, paidRows] = await Promise.all([monthData(month), extrasIn(month), all('SELECT customer_id, SUM(amount) t FROM payments WHERE bill_month=? GROUP BY customer_id', [month])]);
   const extra = new Map();
-  for (const x of await extrasIn(month)) extra.set(x.customer_id, (extra.get(x.customer_id) || 0) + x.qty * x.price);
-  const paid = new Map((await all('SELECT customer_id, SUM(amount) t FROM payments WHERE bill_month=? GROUP BY customer_id', [month])).map((r) => [r.customer_id, r.t]));
+  for (const x of extraRows) extra.set(x.customer_id, (extra.get(x.customer_id) || 0) + x.qty * x.price);
+  const paid = new Map(paidRows.map((r) => [r.customer_id, r.t]));
   return customers.map((c) => {
     let am = 0, pm = 0;
     for (let d = 1; d <= n; d++) { const ds = dateStr(month, d); am += eff(c, ds, 'AM'); pm += eff(c, ds, 'PM'); }
@@ -156,8 +159,8 @@ async function daily(month) {
   return out;
 }
 
-async function pnl(month) {
-  const sales = r2((await bills(month)).reduce((a, b) => a + b.amount, 0));
+async function pnl(month, billRows) {
+  const sales = r2((billRows || await bills(month)).reduce((a, b) => a + b.amount, 0));
   const range = [dateStr(month, 1), monthEnd(month)];
   const sum = async (t) => (await get(`SELECT COALESCE(SUM(amount),0) t FROM ${t} WHERE date>=? AND date<=?`, range)).t;
   const other = r2(await sum('income')), expenses = r2(await sum('expenses'));
@@ -169,7 +172,7 @@ async function pnl(month) {
 async function dashboard(month) {
   const b = await bills(month);
   const collected = (await get('SELECT COALESCE(SUM(amount),0) t FROM payments WHERE bill_month=?', [month])).t;
-  const p = await pnl(month);
+  const p = await pnl(month, b);
   const yieldL = (await get('SELECT COALESCE(SUM(am+pm),0) t FROM cow_yield WHERE date>=? AND date<=?', [dateStr(month, 1), monthEnd(month)])).t;
   return {
     month, customers: (await get('SELECT COUNT(*) n FROM customers')).n,
