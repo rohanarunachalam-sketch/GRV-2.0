@@ -207,7 +207,7 @@ async function nextId(table, prefix, pad) {
 // ---- routing
 const routes = [];
 const route = (method, pattern, fn) => routes.push({ method, re: new RegExp('^' + pattern + '$'), fn });
-const DELIVERY_ALLOWED = new Set(['GET /api/me', 'POST /api/logout', 'GET /api/route', 'PUT /api/delivery', 'GET /api/notices']);
+const DELIVERY_ALLOWED = new Set(['GET /api/me', 'POST /api/logout', 'GET /api/route', 'PUT /api/delivery', 'PUT /api/delivery/unavailable', 'GET /api/notices']);
 const roleAllows = (role, key) => role === 'admin' || (role === 'delivery' && DELIVERY_ALLOWED.has(key)) ||
   (role === 'customer' && (['GET /api/me', 'POST /api/logout'].includes(key) || key.split(' ')[1].startsWith('/api/portal')));
 // delivery staff may only touch today's and yesterday's entries
@@ -270,8 +270,8 @@ route('PUT', '/api/delivery', async ({ body, user }) => {
   return { ok: true };
 });
 // Admin marks a delivery as "Milk Unavailable" (supply shortage). Stored as a 0 quantity (so bills are unchanged) plus a flag that tells it apart from a normal Absent.
-route('PUT', '/api/delivery/unavailable', async ({ body }) => {
-  validDate(body.date); need(['AM', 'PM'].includes(body.session), 'session must be AM or PM'); need(await exists('customers', body.customer_id), 'unknown customer');
+route('PUT', '/api/delivery/unavailable', async ({ body, user }) => {
+  validDate(body.date); checkDeliveryDate(user, body.date); need(['AM', 'PM'].includes(body.session), 'session must be AM or PM'); need(await exists('customers', body.customer_id), 'unknown customer');
   const k = [body.date, body.customer_id, body.session];
   if (body.on) { await run('INSERT OR REPLACE INTO deliveries(date,customer_id,session,qty) VALUES(?,?,?,0)', k); await run('INSERT OR IGNORE INTO milk_unavailable(date,customer_id,session) VALUES(?,?,?)', k); }
   else { await run('DELETE FROM milk_unavailable WHERE date=? AND customer_id=? AND session=?', k); await run('DELETE FROM deliveries WHERE date=? AND customer_id=? AND session=?', k); }
@@ -289,7 +289,7 @@ route('POST', '/api/delivery/reset-day', async ({ body }) => { // clear all over
 route('GET', '/api/route', async ({ q, user }) => {
   validDate(q.date); need(['AM', 'PM'].includes(q.session), 'session must be AM or PM'); checkDeliveryDate(user, q.date);
   const ov = new Map((await all('SELECT customer_id c, qty q FROM deliveries WHERE date=? AND session=?', [q.date, q.session])).map((r) => [r.c, r.q]));
-  const unv = user.role === 'admin' ? new Set((await all('SELECT customer_id c FROM milk_unavailable WHERE date=? AND session=?', [q.date, q.session])).map((r) => r.c)) : new Set();
+  const unv = new Set((await all('SELECT customer_id c FROM milk_unavailable WHERE date=? AND session=?', [q.date, q.session])).map((r) => r.c));
   const skipBy = new Map();
   for (const k of await all("SELECT * FROM skips WHERE status='active' AND from_date<=? AND to_date>=?", [q.date, q.date]))
     if (sessionsOf(k.session).includes(q.session)) skipBy.set(k.customer_id, { note: k.note, to: k.to_date });

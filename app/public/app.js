@@ -143,7 +143,7 @@ async function routeView(v) {
       h('div', { class: 'rtop' }, h('div', {}, h('div', { class: 'rname' }, it.name), h('div', { class: 'def tag' })), h('div', { class: 'qty' })),
       h('div', { class: 'ract' }, h('button', { class: 'step', onclick: () => setQ(it, eff(it) - 0.25, c) }, '−'), h('button', { class: 'step', onclick: () => setQ(it, eff(it) + 0.25, c) }, '+'),
         h('button', { class: 'abs', onclick: () => setQ(it, eff(it) === 0 ? it.def : 0, c) }), h('button', { class: 'step', title: 'Type exact quantity', onclick: () => { const x = prompt(`${it.name} — quantity in litres`, eff(it)); if (x !== null && x.trim() !== '' && Number(x) >= 0) setQ(it, Number(x), c); } }, 'Edit')),
-      staff ? null : h('div', { class: 'ract' }, h('button', { class: 'unv', onclick: guard(async () => { const on = !(it.unavail && it.qty === 0); await api('delivery/unavailable', 'PUT', { date: R.date, customer_id: it.id, session: R.session, on }); it.unavail = on; it.qty = on ? 0 : null; paint(it, c); }) })));
+      h('div', { class: 'ract' }, h('button', { class: 'unv', onclick: guard(async () => { const on = !(it.unavail && it.qty === 0); await api('delivery/unavailable', 'PUT', { date: R.date, customer_id: it.id, session: R.session, on }); it.unavail = on; it.qty = on ? 0 : null; paint(it, c); }) })));
     paint(it, c); return c;
   };
   for (const it of items) cardsBox.append(card(it));
