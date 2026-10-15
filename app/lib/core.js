@@ -316,6 +316,16 @@ route('PUT', '/api/password', async ({ body, user }) => {
   return { ok: true };
 });
 
+// everything in the app, one array of rows per table, for the Excel download in Settings (no logins or sessions)
+route('GET', '/api/export', async ({ user }) => {
+  need(user.role === 'admin', 'Admin only');
+  const out = {};
+  for (const [key, sql] of [['Customers', 'SELECT * FROM customers ORDER BY id'], ['Deliveries', 'SELECT * FROM deliveries ORDER BY date, customer_id, session'], ['Payments', 'SELECT * FROM payments ORDER BY date, id'],
+    ['Income', 'SELECT * FROM income ORDER BY date, id'], ['Expenses', 'SELECT * FROM expenses ORDER BY date, id'], ['Cows', 'SELECT * FROM cows ORDER BY id'], ['Cow Yield', 'SELECT * FROM cow_yield ORDER BY date, cow_id'],
+    ['Cow AI', 'SELECT * FROM cow_ai ORDER BY id'], ['Pauses', 'SELECT * FROM skips ORDER BY id'], ['Milk Unavailable', 'SELECT * FROM milk_unavailable ORDER BY date, customer_id']]) out[key] = await all(sql);
+  return out;
+});
+
 for (const [name, cfg] of Object.entries(masters)) {
   route('GET', `/api/${name}`, () => all(`SELECT * FROM ${cfg.table} ORDER BY ${cfg.order}`));
   route('POST', `/api/${name}`, async ({ body }) => {

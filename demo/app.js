@@ -481,9 +481,58 @@ pages.settings = async (v) => {
     return h('div', { class: 'bar' }, h('b', { style: 'width:90px' }, label), i, h('button', { onclick: guard(async () => { await api('password', 'PUT', { role, password: i.value }); i.value = ''; toast(label + ' password changed'); }) }, 'Change'));
   };
   v.append(h('h2', {}, 'Logins'), h('p', { class: 'sub' }, 'The delivery login only sees today\'s and yesterday\'s delivery list — no prices, bills or reports. Changing a password signs that account out on other phones.'),
-    h('div', { class: 'card' }, pwBox('delivery', 'Delivery'), pwBox('admin', 'Admin')));
+    h('div', { class: 'card' }, pwBox('delivery', 'Delivery'), pwBox('admin', 'Admin')),
+    h('h2', {}, 'Download data'), h('p', { class: 'sub' }, 'All customers, deliveries, payments, income, expenses, cows, cow yield, AI records and pauses in one Excel (.xlsx) file, one sheet per table. Passwords are not included.'),
+    h('div', { class: 'card' }, h('button', { class: 'pri', onclick: guard(downloadExcel) }, 'Download all data (.xlsx)')));
 };
 
+
+// ---------- Excel download (a minimal .xlsx writer, no library needed) ----------
+const CRC = (() => { const t = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+const crc32 = (b) => { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+function zipStore(files) { // files: [[name, string]] -> Uint8Array of an uncompressed zip
+  const enc = new TextEncoder(), parts = [], central = []; let off = 0;
+  const u16 = (n) => [n & 255, (n >>> 8) & 255], u32 = (n) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255];
+  for (const [name, text] of files) {
+    const nm = enc.encode(name), data = enc.encode(text), crc = crc32(data);
+    const common = [...u16(20), ...u16(0x800), ...u16(0), ...u16(0), ...u16(0x21), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(nm.length), ...u16(0)];
+    parts.push(new Uint8Array([0x50, 0x4B, 3, 4, ...common]), nm, data);
+    central.push(new Uint8Array([0x50, 0x4B, 1, 2, ...u16(20), ...common, ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(off)]), nm);
+    off += 30 + nm.length + data.length;
+  }
+  const cdSize = central.reduce((a, b) => a + b.length, 0);
+  const end = new Uint8Array([0x50, 0x4B, 5, 6, 0, 0, 0, 0, ...u16(files.length), ...u16(files.length), ...u32(cdSize), ...u32(off), 0, 0]);
+  const chunks = [...parts, ...central, end], out = new Uint8Array(chunks.reduce((a, b) => a + b.length, 0)); let p = 0;
+  for (const b of chunks) { out.set(b, p); p += b.length; }
+  return out;
+}
+function makeXlsx(sheets) { // sheets: { name: [row objects] }
+  const esc = (x) => String(x).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '').replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]);
+  const col = (i) => { let s = ''; for (i++; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s; return s; };
+  const names = Object.keys(sheets);
+  const sheetXml = (rows) => {
+    const keys = rows.length ? Object.keys(rows[0]) : [];
+    const cellOf = (v, r, c, head) => { const ref = col(c) + r; if (v === null || v === undefined || v === '') return ''; return typeof v === 'number' && isFinite(v) && !head ? `<c r="${ref}"><v>${v}</v></c>` : `<c r="${ref}"${head ? ' s="1"' : ''} t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`; };
+    const body = [keys.map((k, c) => cellOf(k, 1, c, true)).join('')].concat(rows.map((row, i) => keys.map((k, c) => cellOf(row[k], i + 2, c)).join('')));
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols><col min="1" max="${Math.max(keys.length, 1)}" width="16" customWidth="1"/></cols><sheetData>${body.map((r, i) => `<row r="${i + 1}">${r}</row>`).join('')}</sheetData></worksheet>`;
+  };
+  const X = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+  return zipStore([
+    ['[Content_Types].xml', X + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' + names.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('') + '</Types>'],
+    ['_rels/.rels', X + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+    ['xl/workbook.xml', X + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' + names.map((n, i) => `<sheet name="${esc(n)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('') + '</sheets></workbook>'],
+    ['xl/_rels/workbook.xml.rels', X + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + names.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('') + `<Relationship Id="rId${names.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
+    ['xl/styles.xml', X + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs></styleSheet>'],
+    ...names.map((n, i) => [`xl/worksheets/sheet${i + 1}.xml`, sheetXml(sheets[n])]),
+  ]);
+}
+async function downloadExcel() {
+  const data = await api('export');
+  const blob = new Blob([makeXlsx(data)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const a = h('a', { href: URL.createObjectURL(blob), download: `GRV-Dairy-${today()}.xlsx` });
+  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  toast('Excel file downloaded');
+}
 
 // ---------- admin: customer login help ----------
 async function customerLogin(c) {
