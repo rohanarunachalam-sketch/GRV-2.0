@@ -353,11 +353,17 @@ pages.expenses = crud({ title: 'Expense', sub: 'Feed, medicine, labour and other
   cols: [{ label: 'Date', key: 'date' }, { label: 'Category', key: 'category' }, { label: 'Description', key: 'description' }, { label: 'Amount', num: 1, render: (r) => inr(r.amount) }, { label: 'Mode', key: 'mode' }, { label: 'Paid by', key: 'paid_by' }, { label: 'Remarks', key: 'remarks' }],
   total: (rs, n) => sumRow(n, 3, inr(rs.reduce((a, r) => a + r.amount, 0))) });
 
-pages.cows = crud({ title: 'Cow', sub: 'Cow master list.', resource: 'cows', monthly: false, master: true,
+const cowCalving = new Map(); // cow id -> expected calving date, from the newest pregnant AI record
+const cowsPage = crud({ title: 'Cow', sub: 'Cow master list.', resource: 'cows', monthly: false, master: true,
   fields: () => [{ key: 'name', label: 'Name / number', required: true }, { key: 'breed', label: 'Breed' }, { key: 'lactation', label: 'Lactation status', type: 'select', options: ['', 'Lactating', 'Dry', 'Heifer', 'Calf'] },
     { key: 'calving_date', label: 'Calving date', type: 'date' }, { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Sold', 'Deceased'] }, { key: 'notes', label: 'Notes', type: 'textarea' }],
-  cols: [{ label: 'ID', key: 'id' }, { label: 'Name', key: 'name' }, { label: 'Breed', key: 'breed' }, { label: 'Lactation', key: 'lactation' }, { label: 'Calving', key: 'calving_date' }, { label: 'Status', key: 'status' }, { label: 'Notes', key: 'notes' }],
+  cols: [{ label: 'ID', key: 'id' }, { label: 'Name', key: 'name' }, { label: 'Breed', key: 'breed' }, { label: 'Lactation', key: 'lactation' }, { label: 'Last calving', key: 'calving_date' }, { label: 'Expected calving', render: (r) => (cowCalving.has(r.id) ? h('b', {}, dayLabel(cowCalving.get(r.id))) : h('span', { class: 'mute' }, '–')) }, { label: 'Status', key: 'status' }, { label: 'Notes', key: 'notes' }],
   rowExtra: (r) => h('button', { class: 'link', onclick: () => aiDialog(r) }, 'AI') });
+pages.cows = async (v) => {
+  cowCalving.clear();
+  for (const r of (await api('cow-ai')).reverse()) if (r.result === 'Pregnant') cowCalving.set(r.cow_id, r.due_date); // oldest first, so the newest pregnant record wins
+  return cowsPage(v);
+};
 
 // AI (artificial insemination) for one cow: record the AI date, later the confirmation, and see the pregnancy progress.
 async function aiDialog(cow) {
@@ -532,7 +538,7 @@ pages.portal = async (v) => {
   };
   const again = () => { v.innerHTML = ''; pages.portal(v).catch((e) => v.append(h('p', { class: 'bad' }, e.message))); };
   const tabs = h('div', { class: 'seg' }, [['bill', 'My bill'], ['skip', 'No milk'], ['account', 'Account']].map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
-  v.append(h('div', { class: 'who-card' }, h('div', { class: 'avatar' }, (d.customer.name || d.customer.id).trim()[0]?.toUpperCase() || '?'), h('div', {}, h('h1', {}, d.customer.name || 'Welcome'), h('div', { class: 'tag' }, `Customer ${d.customer.id}`))), d.needs_name ? nameForm(true) : null, d.default_password ? h('div', { class: 'card warn', style: 'margin-bottom:10px' }, 'Your password is your phone number. You can change it in the Account tab.') : null, h('div', { class: 'bar' }, tabs));
+  v.append(h('div', { class: 'who-card' }, h('div', { class: 'avatar' }, (d.customer.name || d.customer.id).trim()[0]?.toUpperCase() || '?'), h('div', {}, h('h1', {}, d.customer.name || 'Welcome'), h('div', { class: 'tag' }, `Customer ${d.customer.id}`))), d.needs_name ? nameForm(true) : null, h('div', { class: 'bar' }, tabs));
 
   if (P.tab === 'bill') {
     const upTo = d.cutoff < d.month + '-01' ? null : d.cutoff;

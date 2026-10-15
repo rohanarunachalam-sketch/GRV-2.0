@@ -1,10 +1,10 @@
 /* GRV Dairy — brand: logo green, white, ink black */
 :root{
   color-scheme:light;
-  --bg:#fff;--card:#fff;--ink:#0b1410;--mute:#46524c;--line:#dce8d8;--line2:#b9cdb3;
-  --brand:#2c9018;--brand-d:#1f6d11;--brand-l:#edf7ea;--on-brand:#fff;
-  --warn:#0b1410;--warn-l:#f1f5f0;--bad:#0b1410;--bad-l:#f1f5f0;--good:#2c9018;
-  --hover:#f3f9f1;--yellow:#edf7ea;--shadow:0 1px 3px rgba(11,20,16,.08);
+  --bg:#fff;--card:#fff;--ink:#0b1410;--mute:#46524c;--line:#d9eadf;--line2:#b4d3bf;
+  --brand:#15803d;--brand-d:#166534;--brand-l:#f0fdf4;--on-brand:#fff;
+  --warn:#0b1410;--warn-l:#f1f5f0;--bad:#0b1410;--bad-l:#f1f5f0;--good:#15803d;
+  --hover:#f4faf6;--yellow:#f0fdf4;--shadow:0 1px 3px rgba(11,20,16,.08);
   --r:12px;
 }
 *{box-sizing:border-box}
@@ -104,7 +104,7 @@ dialog::backdrop{background:rgba(10,20,14,.5);backdrop-filter:blur(2px)}
 /* ---- sign in ---- */
 main:has(.login){display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;max-width:none;
   background:var(--brand-l)}
-.login{width:100%;max-width:380px;background:#fff;border-radius:20px;padding:28px 26px;border:1px solid var(--line2);box-shadow:0 12px 40px rgba(31,109,17,.15);margin:0}
+.login{width:100%;max-width:380px;background:#fff;border-radius:20px;padding:28px 26px;border:1px solid var(--line2);box-shadow:0 12px 40px rgba(22,101,52,.15);margin:0}
 .login input,.login select{font-size:16px;padding:11px 13px}
 .login button{width:100%;padding:12px;font-size:16px;margin-top:6px}
 .login .tag{color:var(--ink)}
@@ -134,9 +134,9 @@ img.logo.big{display:block;width:150px;height:150px;margin:0 auto 10px;backgroun
 .invoice table{width:100%}.invoice th,.invoice td{border-bottom:1px solid #e5e5e5;padding:3px 8px;color:#111;background:none}
 .invoice th{background:#f1f5f2;color:#333;position:static;box-shadow:none;letter-spacing:.04em}
 .invoice tbody tr:hover td{background:none}
-.inv-head{display:flex;align-items:center;gap:16px;border-bottom:3px solid #2c9018;padding-bottom:10px;margin-bottom:12px}
+.inv-head{display:flex;align-items:center;gap:16px;border-bottom:3px solid #15803d;padding-bottom:10px;margin-bottom:12px}
 .inv-head img{width:110px;height:110px;object-fit:contain}
-.inv-title{margin-left:auto;text-align:right}.inv-title h1{margin:0 0 4px;color:#2c9018;letter-spacing:2px}
+.inv-title{margin-left:auto;text-align:right}.inv-title h1{margin:0 0 4px;color:#15803d;letter-spacing:2px}
 .inv-to{margin-bottom:12px}
 .inv-cols{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
 .inv-days td,.inv-days th{font-size:12.5px;padding:2px 6px}
@@ -144,7 +144,7 @@ img.logo.big{display:block;width:150px;height:150px;margin:0 auto 10px;backgroun
 .inv-sum{max-width:360px;margin-left:auto}.inv-sum td{font-size:14px}
 .inv-sum tr.b td{font-weight:700}
 .inv-sum tr.due td{font-size:16px;font-weight:700;border-top:2px solid #111}
-.inv-sum .bad{color:#0d1d1c}.inv-sum .good{color:#2c9018}
+.inv-sum .bad{color:#0d1d1c}.inv-sum .good{color:#15803d}
 .inv-foot{margin-top:16px;text-align:center;color:#555;font-size:12.5px}
 
 /* ---- customer portal ---- */
@@ -230,9 +230,9 @@ body.customer .bar .seg{width:100%}
 .ygrid td.gridcell{text-align:center}
 
 /* ---- invoice summary: payments, balance and the closing "Total amount" ---- */
-.inv-sum tr.paid td{color:#1f6d11}
+.inv-sum tr.paid td{color:#166534}
 .inv-sum tr.bal td{font-weight:700;border-top:1px solid #0b1410}
-.inv-sum tr.total td{font-size:18px;font-weight:800;background:#edf7ea;border-top:2px solid #2c9018;border-bottom:2px solid #2c9018;color:#0b1410;padding:8px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.inv-sum tr.total td{font-size:18px;font-weight:800;background:#f0fdf4;border-top:2px solid #15803d;border-bottom:2px solid #15803d;color:#0b1410;padding:8px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 
 /* cow yield grid: dates across, cows down */
 .ygrid th.ycol{text-align:center;min-width:76px;line-height:1.2}.ygrid th.ycol .wd{font-size:10.5px;font-weight:500;opacity:.7}
