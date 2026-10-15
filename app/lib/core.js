@@ -49,6 +49,7 @@ let ready;
 const init = () => ready || (ready = (async () => {
   await client.executeMultiple(SCHEMA);
   try { await client.execute('ALTER TABLE sessions ADD COLUMN cid TEXT'); } catch { /* already there */ }
+  try { await client.execute('ALTER TABLE product_orders ADD COLUMN delivered_on TEXT'); } catch { /* already there */ }
   try { await client.execute("ALTER TABLE customers ADD COLUMN bill_name TEXT DEFAULT ''"); } catch { /* already there */ }
   if ((await get('SELECT COUNT(*) n FROM users')).n === 0) {
     let creds = { admin: process.env.ADMIN_PASSWORD, delivery: process.env.DELIVERY_PASSWORD };
@@ -516,7 +517,7 @@ route('PUT', '/api/product-orders/([0-9]+)', async ({ body, m }) => {
   if (o.status === 'Cancelled' && body.status !== 'Cancelled') { // bringing a cancelled booking back needs the stock again
     const left = (await productRows('WHERE p.id=?', [o.product_id]))[0].left_qty; need(left >= o.qty, `Only ${left} left — cannot reopen this booking`);
   }
-  await run('UPDATE product_orders SET status=? WHERE id=?', [body.status, o.id]); return { ok: true };
+  await run('UPDATE product_orders SET status=?, delivered_on=? WHERE id=?', [body.status, body.status === 'Delivered' ? today() : null, o.id]); return { ok: true };
 });
 route('DELETE', '/api/product-orders/([0-9]+)', async ({ m }) => { await run('DELETE FROM product_orders WHERE id=?', [m[1]]); return { ok: true }; });
 route('GET', '/api/portal/products', async ({ user }) => ({
@@ -550,8 +551,10 @@ route('GET', '/api/portal', async ({ q, user }) => {
   const payments = await all('SELECT date, amount, mode FROM payments WHERE customer_id=? AND bill_month=? ORDER BY date', [cid, month]);
   const paid = payments.reduce((a, x) => a + x.amount, 0), amount = r2((am + pm) * c.price);
   const skips = (await all("SELECT k.*, ? AS name FROM skips k WHERE customer_id=? AND status='active' AND to_date >= ? ORDER BY from_date", [c.bill_name || '', cid, today()])).map(skipRow);
+  const extras = await all(`SELECT o.id, o.qty, o.price, COALESCE(o.delivered_on, o.date) AS date, p.name AS product, p.unit FROM product_orders o LEFT JOIN products p ON p.id=o.product_id
+    WHERE o.customer_id=? AND o.status='Delivered' AND COALESCE(o.delivered_on, o.date) BETWEEN ? AND ? ORDER BY 4, o.id`, [cid, dateStr(month, 1), monthEnd(month)]);
   return { customer: { id: c.id, name: c.bill_name || '', price: c.price, am: c.am, pm: c.pm }, needs_name: !c.bill_name, month, cutoff, update_hour: BILL_HOUR, today: today(), tomorrow: tomorrow(),
-    days, am: r2(am), pm: r2(pm), total: r2(am + pm), amount, paid: r2(paid), due: r2(amount - paid), payments, skips,
+    extras, extras_total: r2(extras.reduce((t, x) => t + x.qty * x.price, 0)), days, am: r2(am), pm: r2(pm), total: r2(am + pm), amount, paid: r2(paid), due: r2(amount - paid), payments, skips,
     default_password: !(await get('SELECT 1 x FROM customer_auth WHERE customer_id=?', [cid])) };
 });
 route('PUT', '/api/portal/password', async ({ body, user }) => {

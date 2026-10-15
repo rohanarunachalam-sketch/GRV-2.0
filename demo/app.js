@@ -656,6 +656,9 @@ pages.portal = async (v) => {
       h('h2', {}, 'Daily details'),
       h('div', { class: 'tablewrap noselect' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Morning', 'Evening', 'Litres'].map((t, i) => h('th', { class: i ? 'n' : '' }, t)))), h('tbody', {}, rows),
         h('tfoot', {}, h('tr', {}, h('td', {}, 'Total'), h('td', { class: 'n' }, lit(d.am)), h('td', { class: 'n' }, lit(d.pm)), h('td', { class: 'n' }, lit(d.total)))))),
+      d.extras.length ? h('div', {}, h('h2', {}, 'Extras delivered'), h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Item', 'Qty', 'Amount'].map((t, i) => h('th', { class: i > 1 ? 'n' : '' }, t)))),
+        h('tbody', {}, d.extras.map((x) => h('tr', {}, h('td', {}, dayLabel(x.date)), h('td', {}, x.product || 'Item'), h('td', { class: 'n' }, qtyText(x.qty, x.unit)), h('td', { class: 'n' }, inr(x.qty * x.price))))),
+        h('tfoot', {}, h('tr', {}, h('td', { colspan: 3 }, 'Extras total'), h('td', { class: 'n' }, inr(d.extras_total))))))) : null,
       d.payments.length ? h('div', {}, h('h2', {}, 'Payments received'), h('div', { class: 'tablewrap' }, h('table', {}, h('tbody', {}, d.payments.map((p) => h('tr', {}, h('td', {}, p.date), h('td', {}, p.mode || ''), h('td', { class: 'n' }, inr(p.amount))))))))  : null,
       h('p', { class: 'tag' }, `Rate: ${inr(d.customer.price)} per litre.`));
   } else if (P.tab === 'shop') {
