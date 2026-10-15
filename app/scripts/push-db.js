@@ -9,7 +9,7 @@ const url = process.env.TURSO_DATABASE_URL, authToken = process.env.TURSO_AUTH_T
 if (!url) { console.error('Set TURSO_DATABASE_URL (and TURSO_AUTH_TOKEN) first.'); process.exit(1); }
 const src = createClient({ url: pathToFileURL(path.join(__dirname, '..', 'data', 'grv.db')).href });
 const dst = createClient({ url, authToken });
-const TABLES = ['customers', 'deliveries', 'payments', 'income', 'expenses', 'cows', 'cow_yield', 'cow_ai', 'settings', 'skips', 'customer_auth'];
+const TABLES = ['customers', 'deliveries', 'payments', 'income', 'expenses', 'cows', 'cow_yield', 'cow_ai', 'settings', 'skips', 'milk_unavailable', 'customer_auth'];
 
 (async () => {
   const had = await dst.execute("SELECT name FROM sqlite_master WHERE name='customers'");

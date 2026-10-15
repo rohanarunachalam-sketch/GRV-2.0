@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS users(role TEXT PRIMARY KEY, salt TEXT, hash TEXT);
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, role TEXT, created INTEGER, cid TEXT);
 CREATE TABLE IF NOT EXISTS customer_auth(customer_id TEXT PRIMARY KEY, salt TEXT, hash TEXT);
 CREATE TABLE IF NOT EXISTS skips(id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id TEXT, from_date TEXT, to_date TEXT, session TEXT, note TEXT DEFAULT '', status TEXT DEFAULT 'active', created TEXT, created_by TEXT);
+CREATE TABLE IF NOT EXISTS milk_unavailable(date TEXT, customer_id TEXT, session TEXT, PRIMARY KEY(date, customer_id, session));
 CREATE TABLE IF NOT EXISTS login_fails(ip TEXT PRIMARY KEY, n INTEGER, until INTEGER);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 `;
@@ -263,14 +264,24 @@ route('GET', '/api/delivery', async ({ q }) => {
 route('PUT', '/api/delivery', async ({ body, user }) => {
   validDate(body.date); checkDeliveryDate(user, body.date); need(['AM', 'PM'].includes(body.session), 'session must be AM or PM');
   need(await exists('customers', body.customer_id), 'unknown customer');
+  await run('DELETE FROM milk_unavailable WHERE date=? AND customer_id=? AND session=?', [body.date, body.customer_id, body.session]); // a manual change replaces the 'Milk Unavailable' mark
   if (body.qty === null || body.qty === '' || body.qty === undefined) await run('DELETE FROM deliveries WHERE date=? AND customer_id=? AND session=?', [body.date, body.customer_id, body.session]);
   else await run('INSERT OR REPLACE INTO deliveries(date,customer_id,session,qty) VALUES(?,?,?,?)', [body.date, body.customer_id, body.session, num(body.qty, 'qty')]);
+  return { ok: true };
+});
+// Admin marks a delivery as "Milk Unavailable" (supply shortage). Stored as a 0 quantity (so bills are unchanged) plus a flag that tells it apart from a normal Absent.
+route('PUT', '/api/delivery/unavailable', async ({ body }) => {
+  validDate(body.date); need(['AM', 'PM'].includes(body.session), 'session must be AM or PM'); need(await exists('customers', body.customer_id), 'unknown customer');
+  const k = [body.date, body.customer_id, body.session];
+  if (body.on) { await run('INSERT OR REPLACE INTO deliveries(date,customer_id,session,qty) VALUES(?,?,?,0)', k); await run('INSERT OR IGNORE INTO milk_unavailable(date,customer_id,session) VALUES(?,?,?)', k); }
+  else { await run('DELETE FROM milk_unavailable WHERE date=? AND customer_id=? AND session=?', k); await run('DELETE FROM deliveries WHERE date=? AND customer_id=? AND session=?', k); }
   return { ok: true };
 });
 route('POST', '/api/delivery/reset-day', async ({ body }) => { // clear all overrides for a day (optionally one session)
   validDate(body.date);
   if (body.session) await run('DELETE FROM deliveries WHERE date=? AND session=?', [body.date, body.session]);
   else await run('DELETE FROM deliveries WHERE date=?', [body.date]);
+  await run(body.session ? 'DELETE FROM milk_unavailable WHERE date=? AND session=?' : 'DELETE FROM milk_unavailable WHERE date=?', body.session ? [body.date, body.session] : [body.date]);
   return { ok: true };
 });
 
@@ -278,6 +289,7 @@ route('POST', '/api/delivery/reset-day', async ({ body }) => { // clear all over
 route('GET', '/api/route', async ({ q, user }) => {
   validDate(q.date); need(['AM', 'PM'].includes(q.session), 'session must be AM or PM'); checkDeliveryDate(user, q.date);
   const ov = new Map((await all('SELECT customer_id c, qty q FROM deliveries WHERE date=? AND session=?', [q.date, q.session])).map((r) => [r.c, r.q]));
+  const unv = user.role === 'admin' ? new Set((await all('SELECT customer_id c FROM milk_unavailable WHERE date=? AND session=?', [q.date, q.session])).map((r) => r.c)) : new Set();
   const skipBy = new Map();
   for (const k of await all("SELECT * FROM skips WHERE status='active' AND from_date<=? AND to_date>=?", [q.date, q.date]))
     if (sessionsOf(k.session).includes(q.session)) skipBy.set(k.customer_id, { note: k.note, to: k.to_date });
@@ -285,7 +297,7 @@ route('GET', '/api/route', async ({ q, user }) => {
   for (const c of await all('SELECT * FROM customers ORDER BY id')) {
     const def = c.status === 'Active' ? (q.session === 'AM' ? c.am : c.pm) : 0;
     const qty = ov.has(c.id) ? ov.get(c.id) : null;
-    if (def > 0 || (qty !== null && qty > 0)) items.push({ id: c.id, name: c.name, def, qty, skip: skipBy.get(c.id) || null });
+    if (def > 0 || (qty !== null && qty > 0)) items.push({ id: c.id, name: c.name, def, qty, skip: skipBy.get(c.id) || null, unavail: unv.has(c.id) && qty === 0 });
   }
   return { date: q.date, session: q.session, items };
 });
@@ -459,11 +471,15 @@ route('GET', '/api/portal', async ({ q, user }) => {
   need(month <= today().slice(0, 7), 'No bills for future months');
   const c = await get('SELECT * FROM customers WHERE id=?', [cid]); need(c, 'customer not found');
   const { n, eff } = await monthData(month);
+  const unv = new Set((await all('SELECT date, session FROM milk_unavailable WHERE customer_id=? AND date>=? AND date<=?', [cid, dateStr(month, 1), monthEnd(month)])).map((r) => r.date + '|' + r.session));
   const days = []; let am = 0, pm = 0;
   for (let d = 1; d <= n; d++) {
     const ds = dateStr(month, d);
     if (ds > cutoff) { days.push({ date: ds, am: null, pm: null }); continue; } // not yet updated
-    const a = eff(c, ds, 'AM'), p = eff(c, ds, 'PM'); am += a; pm += p; days.push({ date: ds, am: a, pm: p });
+    const a = eff(c, ds, 'AM'), p = eff(c, ds, 'PM'); am += a; pm += p;
+    // display-only status for the customer's calendar: Delivered / Paused / Milk Unavailable
+    const st = (unv.has(ds + '|AM') && a === 0) || (unv.has(ds + '|PM') && p === 0) ? 'Unavailable' : a + p > 0 ? 'Delivered' : 'Paused';
+    days.push({ date: ds, am: a, pm: p, st });
   }
   const payments = await all('SELECT date, amount, mode FROM payments WHERE customer_id=? AND bill_month=? ORDER BY date', [cid, month]);
   const paid = payments.reduce((a, x) => a + x.amount, 0), amount = r2((am + pm) * c.price);

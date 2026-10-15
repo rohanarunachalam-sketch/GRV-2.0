@@ -138,7 +138,8 @@ td button.link{white-space:nowrap}
 .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.8}
 .pill.Paid,.pill.Active,.pill.Delivered,.pill.Done,.pill.Pregnant,.pill.Success{background:var(--good-l);color:var(--good)}
 .pill.Pending,.pill.Part,.pill.Unpaid,.pill.Due,.pill.Out{background:var(--warn-l);color:var(--warn)}
-.pill.Inactive,.pill.Stopped,.pill.Failed,.pill.Overdue,.pill.Absent{background:var(--bad-l);color:var(--bad)}
+.pill.Paused{background:var(--warn-l);color:var(--warn)}
+.pill.Unavailable,.pill.Inactive,.pill.Stopped,.pill.Failed,.pill.Overdue,.pill.Absent{background:var(--bad-l);color:var(--bad)}
 
 /* ---- empty states ---- */
 #view > p.mute,#view > div > p.mute,.tablewrap + p.mute{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;border:1.5px dashed var(--line2);background:rgba(255,255,255,.6);border-radius:var(--r);padding:34px 20px;margin:12px 0;font-size:14px}
@@ -188,6 +189,9 @@ img.logo.big{display:block;width:104px;height:104px;margin:0 auto 14px;backgroun
 .rcard button{min-height:48px;font-size:18px;flex:1;border-radius:12px}
 .rcard .abs{flex:2;font-size:14.5px;color:var(--ink);background:var(--card)}
 .rcard .abs.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.rcard.unavail{background:var(--bad-l);border-color:#f2c9c4}.rcard.unavail::before{background:var(--bad)}
+.rcard .unv{flex:1;min-height:40px;font-size:13.5px;color:var(--bad);border-color:#f2c9c4;background:#fff}
+.rcard .unv.on{background:var(--bad);color:#fff;border-color:var(--bad)}
 .rcard[hidden]{display:none}
 
 /* ---- invoice (always light: it is printed) ---- */

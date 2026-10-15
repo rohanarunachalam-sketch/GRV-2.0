@@ -125,15 +125,16 @@ async function routeView(v) {
     val = Math.max(0, Math.round(val * 100) / 100);
     const send = val === (it.skip ? 0 : it.def) ? null : val; // back to the usual/requested quantity clears the override
     await api('delivery', 'PUT', { date: R.date, customer_id: it.id, session: R.session, qty: send });
-    it.qty = send; paint(it, card);
+    it.qty = send; it.unavail = false; paint(it, card);
   });
   const paint = (it, card) => {
     const q = eff(it);
-    const skipped = it.skip && it.qty === null;
-    card.className = 'rcard' + (skipped ? ' skipped' : it.qty === 0 ? ' absent' : it.qty !== null ? ' changed' : '');
+    const skipped = it.skip && it.qty === null, unv = it.unavail && it.qty === 0;
+    card.className = 'rcard' + (unv ? ' unavail' : '') + (skipped ? ' skipped' : it.qty === 0 ? ' absent' : it.qty !== null ? ' changed' : '');
     card.querySelector('.qty').textContent = lit(q) + ' L';
-    card.querySelector('.def').textContent = skipped ? `✕ Customer asked: no milk (until ${dayLabel(it.skip.to)})${it.skip.note ? ' — ' + it.skip.note : ''}` : it.qty === null ? 'usual quantity' : it.qty === 0 ? 'ABSENT (usual ' + lit(it.def) + ' L)' : 'changed (usual ' + lit(it.def) + ' L)';
+    card.querySelector('.def').textContent = skipped ? `✕ Customer asked: no milk (until ${dayLabel(it.skip.to)})${it.skip.note ? ' — ' + it.skip.note : ''}` : it.qty === null ? 'usual quantity' : unv ? '🔴 MILK UNAVAILABLE (usual ' + lit(it.def) + ' L)' : it.qty === 0 ? 'ABSENT (usual ' + lit(it.def) + ' L)' : 'changed (usual ' + lit(it.def) + ' L)';
     const ab = card.querySelector('.abs'); ab.textContent = q === 0 ? 'Undo' : '✕ Absent'; ab.classList.toggle('on', q === 0);
+    const um = card.querySelector('.unv'); if (um) { um.textContent = unv ? 'Undo unavailable' : '🔴 Milk Unavailable'; um.classList.toggle('on', !!unv); }
     stats();
   };
   const stats = () => { const done = items.filter((i) => i.qty !== null).length, sk = items.filter((i) => i.skip && i.qty === null).length; prog.textContent = `${lit(items.reduce((a, i) => a + eff(i), 0))} L to deliver · ${items.filter((i) => eff(i) > 0).length} customers · ${done} changed` + (sk ? ` · ✕ ${sk} customer request${sk > 1 ? 's' : ''} (no milk)` : ''); };
@@ -141,7 +142,8 @@ async function routeView(v) {
     const c = h('div', { class: 'rcard', 'data-name': (it.name + ' ' + it.id).toLowerCase() },
       h('div', { class: 'rtop' }, h('div', {}, h('div', { class: 'rname' }, it.name), h('div', { class: 'def tag' })), h('div', { class: 'qty' })),
       h('div', { class: 'ract' }, h('button', { class: 'step', onclick: () => setQ(it, eff(it) - 0.25, c) }, '−'), h('button', { class: 'step', onclick: () => setQ(it, eff(it) + 0.25, c) }, '+'),
-        h('button', { class: 'abs', onclick: () => setQ(it, eff(it) === 0 ? it.def : 0, c) }), h('button', { class: 'step', title: 'Type exact quantity', onclick: () => { const x = prompt(`${it.name} — quantity in litres`, eff(it)); if (x !== null && x.trim() !== '' && Number(x) >= 0) setQ(it, Number(x), c); } }, 'Edit')));
+        h('button', { class: 'abs', onclick: () => setQ(it, eff(it) === 0 ? it.def : 0, c) }), h('button', { class: 'step', title: 'Type exact quantity', onclick: () => { const x = prompt(`${it.name} — quantity in litres`, eff(it)); if (x !== null && x.trim() !== '' && Number(x) >= 0) setQ(it, Number(x), c); } }, 'Edit')),
+      staff ? null : h('div', { class: 'ract' }, h('button', { class: 'unv', onclick: guard(async () => { const on = !(it.unavail && it.qty === 0); await api('delivery/unavailable', 'PUT', { date: R.date, customer_id: it.id, session: R.session, on }); it.unavail = on; it.qty = on ? 0 : null; paint(it, c); }) })));
     paint(it, c); return c;
   };
   for (const it of items) cardsBox.append(card(it));
@@ -542,7 +544,7 @@ pages.portal = async (v) => {
 
   if (P.tab === 'bill') {
     const upTo = d.cutoff < d.month + '-01' ? null : d.cutoff;
-    const rows = d.days.map((x) => h('tr', { class: x.am === null ? 'mute' : x.am + x.pm === 0 ? 'zero' : '' }, h('td', {}, dayLabel(x.date)), h('td', { class: 'n' }, x.am === null ? '–' : x.am ? lit(x.am) : '0'), h('td', { class: 'n' }, x.pm === null ? '–' : x.pm ? lit(x.pm) : '0'), h('td', { class: 'n' }, x.am === null ? '–' : lit(x.am + x.pm))));
+    const rows = d.days.map((x) => h('tr', { class: x.am === null ? 'mute' : x.am + x.pm === 0 ? 'zero' : '' }, h('td', {}, dayLabel(x.date)), h('td', { class: 'n' }, x.am === null ? '–' : x.am ? lit(x.am) : '0'), h('td', { class: 'n' }, x.pm === null ? '–' : x.pm ? lit(x.pm) : '0'), h('td', { class: 'n' }, x.am === null ? '–' : lit(x.am + x.pm)), h('td', {}, x.st ? h('span', { class: 'pill ' + x.st }, x.st === 'Unavailable' ? 'Milk Unavailable' : x.st) : '')));
     const m = h('input', { type: 'month', value: d.month, max: d.today.slice(0, 7), onchange: (e) => { if (e.target.value) { P.month = e.target.value; again(); } } });
     v.append(h('div', { class: 'bar' }, h('label', { class: 'tag' }, 'Month ', m)),
       h('p', { class: 'tag' }, upTo ? `Updated up to ${dayLabel(upTo)}. Each day is added at ${d.update_hour > 12 ? d.update_hour - 12 : d.update_hour} ${d.update_hour >= 12 ? 'PM' : 'AM'}.` : `Not updated yet — each day is added at ${d.update_hour > 12 ? d.update_hour - 12 : d.update_hour} ${d.update_hour >= 12 ? 'PM' : 'AM'}.`),
@@ -551,8 +553,8 @@ pages.portal = async (v) => {
         null),
       d.paid > 0 ? h('div', { class: 'thanks' }, h('div', { class: 'tick' }, '✓'), h('div', {}, h('b', {}, d.due > 0 ? 'Thank you for your payment!' : 'Thank you! Your bill is paid in full.'),
         h('div', { class: 'tag' }, d.due > 0 ? `We received ${inr(d.paid)}. ${inr(d.due)} is still pending.` : `We received ${inr(d.paid)}. Nothing is pending.`))) : null,
-      h('div', { class: 'tablewrap noselect' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Morning', 'Evening', 'Litres'].map((t, i) => h('th', { class: i ? 'n' : '' }, t)))), h('tbody', {}, rows),
-        h('tfoot', {}, h('tr', {}, h('td', {}, 'Total'), h('td', { class: 'n' }, lit(d.am)), h('td', { class: 'n' }, lit(d.pm)), h('td', { class: 'n' }, lit(d.total)))))),
+      h('div', { class: 'tablewrap noselect' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Morning', 'Evening', 'Litres', 'Status'].map((t, i) => h('th', { class: i && i < 4 ? 'n' : '' }, t)))), h('tbody', {}, rows),
+        h('tfoot', {}, h('tr', {}, h('td', {}, 'Total'), h('td', { class: 'n' }, lit(d.am)), h('td', { class: 'n' }, lit(d.pm)), h('td', { class: 'n' }, lit(d.total)), h('td', {}))))),
       d.payments.length ? h('div', {}, h('h2', {}, 'Payments received'), h('div', { class: 'tablewrap' }, h('table', {}, h('tbody', {}, d.payments.map((p) => h('tr', {}, h('td', {}, p.date), h('td', {}, p.mode || ''), h('td', { class: 'n' }, inr(p.amount))))))))  : null,
       h('p', { class: 'tag' }, `Rate: ${inr(d.customer.price)} per litre.`));
   } else if (P.tab === 'skip') {
