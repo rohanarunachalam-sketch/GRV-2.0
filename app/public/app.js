@@ -487,6 +487,51 @@ pages.settings = async (v) => {
 };
 
 
+// ---------- extra items: egg, ghee, curd... (admin) ----------
+const UNITS = ['Nos', 'Litre', 'Kg', 'Packet', 'Dozen'];
+const qtyText = (n, unit) => `${lit(n)} ${unit === 'Nos' ? '' : unit || ''}`.trim();
+pages.extras = async (v) => {
+  await loadCustomers();
+  const [items, orders] = await Promise.all([api('products'), api('product-orders')]);
+  let show = 'Booked';
+  const editItem = (p) => openForm({ title: p ? 'Edit item' : 'Add item', saveLabel: 'Save',
+    intro: h('p', { class: 'tag' }, 'Total quantity is everything you have put up for booking. Customers see what is left after bookings.'),
+    fields: [{ key: 'name', label: 'Item (e.g. Egg, Ghee, Curd)', required: true }, { key: 'unit', label: 'Sold in', type: 'select', options: UNITS },
+      { key: 'price', label: 'Price per unit (₹)', type: 'number', required: true }, { key: 'stock', label: 'Total quantity available', type: 'number', required: true },
+      ...(p ? [{ key: 'active', label: 'Show to customers', type: 'select', options: [['1', 'Yes'], ['0', 'Hidden']] }] : [])],
+    values: p ? { ...p, active: p.active ? '1' : '0' } : { unit: 'Nos' },
+    onSave: async (d) => { await api(p ? 'products/' + p.id : 'products', p ? 'PUT' : 'POST', d); toast('Saved'); render(); } });
+  const bookFor = () => {
+    const live = items.filter((i) => i.active);
+    if (!live.length) return toast('Add an item first', true);
+    openForm({ title: 'Book for a customer', saveLabel: 'Book', intro: h('p', { class: 'tag' }, 'For orders that come by phone call.'),
+      fields: [{ key: 'customer_id', label: 'Customer', type: 'select', options: customersCache.map((c) => [c.id, `${c.id} — ${c.name}`]) },
+        { key: 'product_id', label: 'Item', type: 'select', options: live.map((i) => [i.id, `${i.name} (${qtyText(i.left_qty, i.unit)} left)`]) },
+        { key: 'qty', label: 'Quantity', type: 'number', required: true }, { key: 'note', label: 'Note' }],
+      onSave: async (d) => { await api('product-orders', 'POST', d); toast('Booked'); render(); } });
+  };
+  const itemTable = items.length ? table([{ label: 'Item', render: (p) => h('span', {}, h('b', {}, p.name), p.active ? '' : h('span', { class: 'tag' }, '  (hidden)')) }, { label: 'Price', num: 1, render: (p) => inr(p.price) + ' / ' + p.unit },
+    { label: 'Total', num: 1, render: (p) => qtyText(p.stock, p.unit) }, { label: 'Booked', num: 1, render: (p) => qtyText(p.booked, p.unit) }, { label: 'Left', num: 1, render: (p) => h('b', { class: p.left_qty ? '' : 'bad' }, qtyText(p.left_qty, p.unit)) },
+    { label: '', render: (p) => actions(() => editItem(p), guard(async () => { if (!confirmDel(p.name)) return; await api('products/' + p.id, 'DELETE'); toast('Deleted'); render(); })) }], items)
+    : h('p', { class: 'mute' }, 'No items yet. Click + Add item to add egg, ghee, curd and so on.');
+  const holder = h('div');
+  const draw = () => {
+    holder.innerHTML = '';
+    const rs = orders.filter((o) => show === 'All' || o.status === show);
+    holder.append(rs.length ? table([{ label: 'Date', key: 'date' }, { label: 'Customer', render: (o) => `${o.customer_id} — ${o.customer || ''}` }, { label: 'Item', render: (o) => o.product || '(deleted)' },
+      { label: 'Qty', num: 1, render: (o) => qtyText(o.qty, o.unit) }, { label: 'Amount', num: 1, render: (o) => inr(o.qty * o.price) }, { label: 'By', render: (o) => (o.created_by === 'admin' ? 'Admin' : 'Customer') },
+      { label: 'Status', render: (o) => pill(o.status) },
+      { label: '', render: (o) => h('span', {}, o.status === 'Booked' ? h('button', { class: 'link', onclick: guard(async () => { await api('product-orders/' + o.id, 'PUT', { status: 'Delivered' }); toast('Marked delivered'); render(); }) }, 'Delivered') : null,
+        o.status !== 'Cancelled' ? h('button', { class: 'link del', onclick: guard(async () => { if (!confirm('Cancel this booking? The quantity goes back to available.')) return; await api('product-orders/' + o.id, 'PUT', { status: 'Cancelled' }); toast('Cancelled'); render(); }) }, 'Cancel')
+          : h('button', { class: 'link', onclick: guard(async () => { await api('product-orders/' + o.id, 'PUT', { status: 'Booked' }); toast('Reopened'); render(); }) }, 'Reopen')) }], rs) : h('p', { class: 'mute' }, 'Nothing here.'));
+  };
+  const filt = h('select', { onchange: (e) => { show = e.target.value; draw(); } }, ['Booked', 'Delivered', 'Cancelled', 'All'].map((o) => h('option', { value: o }, o === 'All' ? 'All bookings' : o)));
+  v.append(h('h1', {}, 'Extra Items'), h('p', { class: 'sub' }, 'Egg, ghee, curd and other items. Customers see what is left and book from their own login; you can also book for them when they call.'),
+    h('div', { class: 'bar' }, h('button', { class: 'pri', onclick: () => editItem() }, '+ Add item'), h('button', { onclick: bookFor }, 'Book for a customer')), itemTable,
+    h('h2', {}, 'Bookings'), h('div', { class: 'bar' }, h('label', { class: 'tag' }, 'Show ', filt)), holder);
+  draw();
+};
+
 // ---------- Excel download (a minimal .xlsx writer, no library needed) ----------
 const CRC = (() => { const t = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
 const crc32 = (b) => { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
@@ -593,7 +638,7 @@ pages.portal = async (v) => {
       h('label', {}, 'Your name', i), h('button', { class: 'pri', type: 'submit' }, 'Save name'));
   };
   const again = () => { v.innerHTML = ''; pages.portal(v).catch((e) => v.append(h('p', { class: 'bad' }, e.message))); };
-  const tabs = h('div', { class: 'seg' }, [['bill', 'My bill'], ['skip', 'No milk'], ['account', 'Account']].map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
+  const tabs = h('div', { class: 'seg' }, [['bill', 'My bill'], ['skip', 'No milk'], ['shop', 'Extras'], ['account', 'Account']].map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
   v.append(h('div', { class: 'who-card' }, h('div', { class: 'avatar' }, (d.customer.name || d.customer.id).trim()[0]?.toUpperCase() || '?'), h('div', {}, h('h1', {}, d.customer.name || 'Welcome'), h('div', { class: 'tag' }, `Customer ${d.customer.id}`))), d.needs_name ? nameForm(true) : null, h('div', { class: 'bar' }, tabs));
 
   if (P.tab === 'bill') {
@@ -613,6 +658,23 @@ pages.portal = async (v) => {
         h('tfoot', {}, h('tr', {}, h('td', {}, 'Total'), h('td', { class: 'n' }, lit(d.am)), h('td', { class: 'n' }, lit(d.pm)), h('td', { class: 'n' }, lit(d.total)))))),
       d.payments.length ? h('div', {}, h('h2', {}, 'Payments received'), h('div', { class: 'tablewrap' }, h('table', {}, h('tbody', {}, d.payments.map((p) => h('tr', {}, h('td', {}, p.date), h('td', {}, p.mode || ''), h('td', { class: 'n' }, inr(p.amount))))))))  : null,
       h('p', { class: 'tag' }, `Rate: ${inr(d.customer.price)} per litre.`));
+  } else if (P.tab === 'shop') {
+    const sh = await api('portal/products');
+    const card = (i) => {
+      const dec = i.unit === 'Litre' || i.unit === 'Kg';
+      const q = h('input', { type: 'number', min: dec ? 0.25 : 1, step: dec ? 'any' : 1, inputmode: dec ? 'decimal' : 'numeric', placeholder: dec ? 'Litres' : 'How many', 'aria-label': i.name + ' quantity', disabled: !i.left });
+      const go = guard(async () => { await api('portal/orders', 'POST', { product_id: i.id, qty: q.value }); toast('Booked!'); again(); });
+      return h('form', { class: 'rcard', onsubmit: (e) => { e.preventDefault(); go(); } }, h('div', { class: 'rname' }, i.name), h('div', { class: 'tag' }, `${inr(i.price)} per ${i.unit === 'Nos' ? 'piece' : i.unit.toLowerCase()}`),
+        h('div', { style: 'margin:8px 0' }, i.left ? h('b', {}, `${qtyText(i.left, i.unit)} available`) : h('b', { class: 'bad' }, 'Sold out')),
+        h('div', { class: 'bar' }, q, h('button', { class: 'pri', type: 'submit', disabled: !i.left }, 'Book')));
+    };
+    v.append(h('h2', { style: 'margin-top:0' }, 'Extras'), h('p', { class: 'tag' }, 'Book egg, ghee, curd and more. The quantity left goes down as people book. The admin will deliver it to you.'),
+      sh.items.length ? h('div', { class: 'cards-list' }, sh.items.map(card)) : h('p', { class: 'mute' }, 'Nothing is available to book right now.'),
+      h('h2', {}, 'My bookings'),
+      sh.orders.length ? h('div', { class: 'cards-list' }, sh.orders.map((o) => h('div', { class: 'rcard' }, h('div', { class: 'rname' }, `${o.product || 'Item'} — ${qtyText(o.qty, o.unit)}`),
+        h('div', { class: 'tag' }, `${dayLabel(o.date)} · ${inr(o.qty * o.price)}`), h('div', { style: 'margin-top:6px' }, pill(o.status)),
+        o.status === 'Booked' ? h('div', { class: 'ract' }, h('button', { class: 'abs', onclick: guard(async () => { if (!confirm('Cancel this booking?')) return; await api('portal/orders/' + o.id, 'DELETE'); toast('Cancelled'); again(); }) }, 'Cancel')) : null)))
+        : h('p', { class: 'mute' }, 'You have not booked anything yet.'));
   } else if (P.tab === 'skip') {
     const f = h('input', { type: 'date', value: d.tomorrow, min: d.today, required: true }), t = h('input', { type: 'date', value: d.tomorrow, min: d.today, required: true });
     f.addEventListener('change', () => { if (t.value < f.value) t.value = f.value; t.min = f.value; });
@@ -643,7 +705,7 @@ function monthCalendar(d) {
       cells.map((x) => x ? h('div', { class: 'cal-d ' + (cls[x.st] || ''), title: x.st ? (x.st === 'Unavailable' ? 'Milk Unavailable' : x.st) : '' }, Number(x.date.slice(8))) : h('div', {}))),
     h('div', { class: 'cal-key' }, h('span', { class: 'ok' }, 'Delivered'), h('span', { class: 'pause' }, 'Paused'), h('span', { class: 'out' }, 'Milk Unavailable')));
 }
-const NAV = [['dashboard', 'Dashboard'], ['delivery', 'Delivery'], ['notices', 'Notices'], ['daily', 'Daily Summary'], ['bills', 'Bills'], ['customers', 'Customers'], ['income', 'Income'], ['expenses', 'Expenses'], ['pnl', 'P&L'], ['cows', 'Cows'], ['yield', 'Cow Yield'], ['settings', 'Settings']];
+const NAV = [['dashboard', 'Dashboard'], ['delivery', 'Delivery'], ['notices', 'Notices'], ['daily', 'Daily Summary'], ['bills', 'Bills'], ['customers', 'Customers'], ['income', 'Income'], ['expenses', 'Expenses'], ['pnl', 'P&L'], ['cows', 'Cows'], ['yield', 'Cow Yield'], ['extras', 'Extras'], ['settings', 'Settings']];
 const DELIVERY_NAV = [['delivery', 'Deliveries'], ['notices', 'Notices']];
 const hdr = $('header');
 

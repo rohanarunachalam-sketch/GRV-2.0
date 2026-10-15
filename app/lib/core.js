@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS skips(id INTEGER PRIMARY KEY AUTOINCREMENT, customer_
 CREATE TABLE IF NOT EXISTS milk_unavailable(date TEXT, customer_id TEXT, session TEXT, PRIMARY KEY(date, customer_id, session));
 CREATE TABLE IF NOT EXISTS login_fails(ip TEXT PRIMARY KEY, n INTEGER, until INTEGER);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, unit TEXT DEFAULT 'Nos', price REAL DEFAULT 0, stock REAL DEFAULT 0, active INTEGER DEFAULT 1);
+CREATE TABLE IF NOT EXISTS product_orders(id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, customer_id TEXT, qty REAL, price REAL, date TEXT, status TEXT DEFAULT 'Booked', note TEXT DEFAULT '', created TEXT, created_by TEXT);
 `;
 
 // ---- auth helpers
@@ -322,7 +324,7 @@ route('GET', '/api/export', async ({ user }) => {
   const out = {};
   for (const [key, sql] of [['Customers', 'SELECT * FROM customers ORDER BY id'], ['Deliveries', 'SELECT * FROM deliveries ORDER BY date, customer_id, session'], ['Payments', 'SELECT * FROM payments ORDER BY date, id'],
     ['Income', 'SELECT * FROM income ORDER BY date, id'], ['Expenses', 'SELECT * FROM expenses ORDER BY date, id'], ['Cows', 'SELECT * FROM cows ORDER BY id'], ['Cow Yield', 'SELECT * FROM cow_yield ORDER BY date, cow_id'],
-    ['Cow AI', 'SELECT * FROM cow_ai ORDER BY id'], ['Pauses', 'SELECT * FROM skips ORDER BY id'], ['Milk Unavailable', 'SELECT * FROM milk_unavailable ORDER BY date, customer_id']]) out[key] = await all(sql);
+    ['Extra Items', 'SELECT * FROM products ORDER BY id'], ['Extra Bookings', 'SELECT * FROM product_orders ORDER BY id'], ['Cow AI', 'SELECT * FROM cow_ai ORDER BY id'], ['Pauses', 'SELECT * FROM skips ORDER BY id'], ['Milk Unavailable', 'SELECT * FROM milk_unavailable ORDER BY date, customer_id']]) out[key] = await all(sql);
   return out;
 });
 
@@ -472,6 +474,60 @@ route('GET', '/api/cow-alerts', async () => {
     if (k > r.ack) out.push({ ...base, type: 'milestone', milestone: k });
   }
   return out.sort((a, b) => b.days - a.days);
+});
+
+
+// ---- extra items (egg, ghee, curd...): admin sets the quantity available, customers (or the admin, for phone orders) book against it
+const UNITS = ['Nos', 'Litre', 'Kg', 'Packet', 'Dozen'], DECIMAL_UNITS = new Set(['Litre', 'Kg']);
+const LEFT_SQL = `p.stock - COALESCE((SELECT SUM(o.qty) FROM product_orders o WHERE o.product_id=p.id AND o.status<>'Cancelled'), 0)`; // stock minus everything booked (cancelled bookings give it back)
+const productRows = async (where = '', args = []) => (await all(`SELECT p.*, ${LEFT_SQL} AS left_qty FROM products p ${where} ORDER BY p.name COLLATE NOCASE`, args)).map((p) => ({ ...p, left_qty: r2(Math.max(p.left_qty, 0)), booked: r2(p.stock - Math.max(p.left_qty, 0)) }));
+const checkQty = (unit, v) => { const n = Number(v); need(v !== '' && v != null && Number.isFinite(n) && n > 0, 'Enter a quantity greater than 0'); need(DECIMAL_UNITS.has(unit) || Number.isInteger(n), `${unit} must be a whole number`); need(n <= 100000, 'Quantity too large'); return r2(n); };
+async function placeOrder(productId, customerId, qty, by, note) {
+  const p = await get('SELECT * FROM products WHERE id=?', [productId]); need(p && p.active, 'This item is not available');
+  qty = checkQty(p.unit, qty);
+  const r = await run(`INSERT INTO product_orders(product_id,customer_id,qty,price,date,status,note,created,created_by)
+    SELECT p.id, ?, ?, p.price, ?, 'Booked', ?, ?, ? FROM products p WHERE p.id=? AND ${LEFT_SQL} >= ?`, [customerId, qty, today(), String(note || '').slice(0, 200), new Date().toISOString(), by, p.id, qty]); // the stock check and the insert are one statement, so two people can't both take the last one
+  if (!r.changes) { const left = (await productRows('WHERE p.id=?', [p.id]))[0].left_qty; need(false, left > 0 ? `Only ${left} ${p.unit} left` : `${p.name} is sold out`); }
+  return { id: r.id };
+}
+const productFields = (b) => {
+  const name = String(b.name || '').trim(); need(name && name.length <= 60, 'Enter the item name');
+  need(UNITS.includes(b.unit), 'Choose a unit');
+  return [name, b.unit, num(b.price || 0, 'price'), num(b.stock || 0, 'quantity')];
+};
+route('GET', '/api/products', () => productRows());
+route('POST', '/api/products', async ({ body }) => { const [n, u, pr, st] = productFields(body); const r = await run('INSERT INTO products(name,unit,price,stock) VALUES(?,?,?,?)', [n, u, pr, st]); return { id: r.id }; });
+route('PUT', '/api/products/([0-9]+)', async ({ body, m }) => {
+  need(await exists('products', m[1]), 'not found');
+  const [n, u, pr, st] = productFields(body);
+  const booked = (await productRows('WHERE p.id=?', [m[1]]))[0].booked;
+  need(st >= booked, `${booked} already booked — the total cannot be less than that`);
+  await run('UPDATE products SET name=?, unit=?, price=?, stock=?, active=? WHERE id=?', [n, u, pr, st, body.active === 0 || body.active === '0' ? 0 : 1, m[1]]); return { ok: true };
+});
+route('DELETE', '/api/products/([0-9]+)', async ({ m }) => {
+  need(!(await get('SELECT 1 x FROM product_orders WHERE product_id=?', [m[1]])), 'This item has bookings — set it to Hidden instead of deleting.');
+  await run('DELETE FROM products WHERE id=?', [m[1]]); return { ok: true };
+});
+route('GET', '/api/product-orders', () => all(`SELECT o.*, p.name AS product, p.unit, c.name AS customer FROM product_orders o LEFT JOIN products p ON p.id=o.product_id LEFT JOIN customers c ON c.id=o.customer_id ORDER BY o.id DESC LIMIT 1000`));
+route('POST', '/api/product-orders', async ({ body }) => { need(await exists('customers', body.customer_id), 'Choose a customer'); return placeOrder(Number(body.product_id), body.customer_id, body.qty, 'admin', body.note); });
+route('PUT', '/api/product-orders/([0-9]+)', async ({ body, m }) => {
+  const o = await get('SELECT * FROM product_orders WHERE id=?', [m[1]]); need(o, 'not found');
+  need(['Booked', 'Delivered', 'Cancelled'].includes(body.status), 'bad status');
+  if (o.status === 'Cancelled' && body.status !== 'Cancelled') { // bringing a cancelled booking back needs the stock again
+    const left = (await productRows('WHERE p.id=?', [o.product_id]))[0].left_qty; need(left >= o.qty, `Only ${left} left — cannot reopen this booking`);
+  }
+  await run('UPDATE product_orders SET status=? WHERE id=?', [body.status, o.id]); return { ok: true };
+});
+route('DELETE', '/api/product-orders/([0-9]+)', async ({ m }) => { await run('DELETE FROM product_orders WHERE id=?', [m[1]]); return { ok: true }; });
+route('GET', '/api/portal/products', async ({ user }) => ({
+  items: (await productRows('WHERE p.active=1')).map(({ id, name, unit, price, left_qty }) => ({ id, name, unit, price, left: left_qty })),
+  orders: await all('SELECT o.id, o.qty, o.price, o.date, o.status, p.name AS product, p.unit FROM product_orders o LEFT JOIN products p ON p.id=o.product_id WHERE o.customer_id=? ORDER BY o.id DESC LIMIT 100', [user.cid]),
+}));
+route('POST', '/api/portal/orders', async ({ body, user }) => placeOrder(Number(body.product_id), user.cid, body.qty, 'customer', body.note));
+route('DELETE', '/api/portal/orders/([0-9]+)', async ({ m, user }) => {
+  const o = await get('SELECT * FROM product_orders WHERE id=? AND customer_id=?', [m[1], user.cid]); need(o, 'not found');
+  need(o.status === 'Booked', 'Only a booking that is not yet delivered can be cancelled');
+  await run("UPDATE product_orders SET status='Cancelled' WHERE id=?", [o.id]); return { ok: true };
 });
 
 // ---- customer portal
