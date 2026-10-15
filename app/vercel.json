@@ -1,5 +1,6 @@
 {
   "framework": null,
+  "regions": ["bom1"],
   "buildCommand": "",
   "installCommand": "npm install",
   "outputDirectory": "public",
