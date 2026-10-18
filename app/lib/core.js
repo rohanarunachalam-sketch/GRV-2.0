@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS milk_unavailable(date TEXT, customer_id TEXT, session
 CREATE TABLE IF NOT EXISTS login_fails(ip TEXT PRIMARY KEY, n INTEGER, until INTEGER);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, unit TEXT DEFAULT 'Nos', price REAL DEFAULT 0, stock REAL DEFAULT 0, active INTEGER DEFAULT 1);
+CREATE TABLE IF NOT EXISTS customer_plans(customer_id TEXT, from_date TEXT, am REAL DEFAULT 0, pm REAL DEFAULT 0, price REAL DEFAULT 0, status TEXT DEFAULT 'Active', PRIMARY KEY(customer_id, from_date));
 CREATE TABLE IF NOT EXISTS product_orders(id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, customer_id TEXT, qty REAL, price REAL, date TEXT, status TEXT DEFAULT 'Booked', note TEXT DEFAULT '', created TEXT, created_by TEXT);
 `;
 
@@ -100,12 +101,30 @@ const billCutoff = () => (hourNow() >= BILL_HOUR ? today() : yesterday()); // la
 const addDays = (ds, n) => { const d = new Date(ds + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const sessionsOf = (s) => (s === 'BOTH' ? ['AM', 'PM'] : [s]);
 
+// Customer quantity/price history: each customer_plans row applies from its from_date until the next one.
+// A customer with no rows uses the customers row for every date (how all customers worked before).
+// Dates before a customer's first row are before they started, so nothing is delivered.
+const BASE_DATE = '0000-01-01'; // "since always" — keeps the old values when the first dated change is made
+const planOn = (c, plans, date) => {
+  if (!plans || !plans.length) return c;
+  let p = null;
+  for (const r of plans) { if (r.from_date <= date) p = r; else break; }
+  return p || { am: 0, pm: 0, price: plans[0].price, status: 'Inactive' };
+};
+const defQty = (p, s) => (p.status === 'Active' ? (s === 'AM' ? p.am : p.pm) : 0);
+const plansOf = async (cid) => {
+  const rows = await all(cid ? 'SELECT * FROM customer_plans WHERE customer_id=? ORDER BY from_date' : 'SELECT * FROM customer_plans ORDER BY customer_id, from_date', cid ? [cid] : []);
+  const m = new Map();
+  for (const r of rows) { if (!m.has(r.customer_id)) m.set(r.customer_id, []); m.get(r.customer_id).push(r); }
+  return m;
+};
+
 // Effective quantity: explicit entry wins (0 = no delivery); blank = default for Active customers.
 async function monthData(month) {
-  const [customers, dels, skipRows] = await Promise.all([ // asked together, so the wait is one round trip instead of three (matters on a remote database)
+  const [customers, dels, skipRows, plans] = await Promise.all([ // asked together, so the wait is one round trip instead of four (matters on a remote database)
     all('SELECT * FROM customers ORDER BY id'),
     all('SELECT * FROM deliveries WHERE date >= ? AND date <= ?', [dateStr(month, 1), monthEnd(month)]),
-    all("SELECT * FROM skips WHERE status='active' AND from_date <= ? AND to_date >= ?", [monthEnd(month), dateStr(month, 1)])]);
+    all("SELECT * FROM skips WHERE status='active' AND from_date <= ? AND to_date >= ?", [monthEnd(month), dateStr(month, 1)]), plansOf()]);
   const ov = new Map();
   for (const r of dels) ov.set(`${r.customer_id}|${r.date}|${r.session}`, r.qty);
   const n = daysIn(month);
@@ -114,13 +133,14 @@ async function monthData(month) {
   for (const k of skipRows)
     for (let d = Math.max(k.from_date < dateStr(month, 1) ? 1 : Number(k.from_date.slice(8)), 1); d <= (k.to_date > monthEnd(month) ? n : Number(k.to_date.slice(8))); d++)
       for (const s of sessionsOf(k.session)) skipSet.add(`${k.customer_id}|${dateStr(month, d)}|${s}`);
+  const planAt = (c, date) => planOn(c, plans.get(c.id), date);
   const eff = (c, date, s) => {
     const k = `${c.id}|${date}|${s}`;
     if (ov.has(k)) return ov.get(k);
     if (skipSet.has(k)) return 0;
-    return c.status === 'Active' ? (s === 'AM' ? c.am : c.pm) : 0;
+    return defQty(planAt(c, date), s);
   };
-  return { customers, n, eff, ov, skipSet };
+  return { customers, n, eff, ov, skipSet, planAt, plans };
 }
 
 // delivered extras (egg, curd, ghee...) of a month, counted in the month they were marked delivered
@@ -128,31 +148,31 @@ const extrasIn = (month, cid) => all(`SELECT o.id, o.customer_id, o.qty, o.price
   WHERE o.status='Delivered' AND COALESCE(o.delivered_on, o.date) BETWEEN ? AND ?${cid ? ' AND o.customer_id=?' : ''} ORDER BY 4, o.id`, cid ? [dateStr(month, 1), monthEnd(month), cid] : [dateStr(month, 1), monthEnd(month)]);
 
 async function bills(month) {
-  const [{ customers, n, eff }, extraRows, paidRows] = await Promise.all([monthData(month), extrasIn(month), all('SELECT customer_id, SUM(amount) t FROM payments WHERE bill_month=? GROUP BY customer_id', [month])]);
+  const [{ customers, n, eff, planAt }, extraRows, paidRows] = await Promise.all([monthData(month), extrasIn(month), all('SELECT customer_id, SUM(amount) t FROM payments WHERE bill_month=? GROUP BY customer_id', [month])]);
   const extra = new Map();
   for (const x of extraRows) extra.set(x.customer_id, (extra.get(x.customer_id) || 0) + x.qty * x.price);
   const paid = new Map(paidRows.map((r) => [r.customer_id, r.t]));
   return customers.map((c) => {
-    let am = 0, pm = 0;
-    for (let d = 1; d <= n; d++) { const ds = dateStr(month, d); am += eff(c, ds, 'AM'); pm += eff(c, ds, 'PM'); }
-    const total = am + pm, milk_amount = r2(total * c.price), extras_amount = r2(extra.get(c.id) || 0), amount = r2(milk_amount + extras_amount), p = paid.get(c.id) || 0, pending = r2(amount - p);
-    return { id: c.id, name: c.name, bill_name: c.bill_name || '', phone: c.phone, status: c.status, am: r2(am), pm: r2(pm), total: r2(total), price: c.price, milk_amount, extras_amount, amount, paid: r2(p), pending,
+    let am = 0, pm = 0, milk = 0; // the price can change mid-month, so each day is priced on its own
+    for (let d = 1; d <= n; d++) { const ds = dateStr(month, d), a = eff(c, ds, 'AM'), b = eff(c, ds, 'PM'); am += a; pm += b; milk += (a + b) * planAt(c, ds).price; }
+    const total = am + pm, price = planAt(c, monthEnd(month)).price, milk_amount = r2(milk), extras_amount = r2(extra.get(c.id) || 0), amount = r2(milk_amount + extras_amount), p = paid.get(c.id) || 0, pending = r2(amount - p);
+    return { id: c.id, name: c.name, bill_name: c.bill_name || '', phone: c.phone, status: c.status, am: r2(am), pm: r2(pm), total: r2(total), price, milk_amount, extras_amount, amount, paid: r2(p), pending,
       pay_status: amount === 0 && p === 0 ? '-' : pending <= 0 ? 'Paid' : p > 0 ? 'Part Paid' : 'Pending' };
   });
 }
 
 async function daily(month) {
-  const { customers, n, eff } = await monthData(month);
+  const { customers, n, eff, planAt } = await monthData(month);
   const out = [];
   for (let d = 1; d <= n; d++) {
     const ds = dateStr(month, d);
     let am = 0, pm = 0, served = 0, absent = 0, sales = 0;
     for (const c of customers) for (const s of ['AM', 'PM']) {
-      const q = eff(c, ds, s);
+      const q = eff(c, ds, s), p = planAt(c, ds);
       if (s === 'AM') am += q; else pm += q;
       if (q > 0) served++;
-      if (q === 0 && (s === 'AM' ? c.am : c.pm) > 0 && c.status === 'Active') absent++;
-      sales += q * c.price;
+      if (q === 0 && defQty(p, s) > 0) absent++;
+      sales += q * p.price;
     }
     out.push({ date: ds, am: r2(am), pm: r2(pm), total: r2(am + pm), served, absent, sales: r2(sales) });
   }
@@ -268,9 +288,9 @@ route('GET', '/api/bill', async ({ q }) => {
 route('GET', '/api/delivery', async ({ q }) => {
   const month = validMonth(q.month);
   const entries = await all('SELECT customer_id c, date d, session s, qty q FROM deliveries WHERE date>=? AND date<=?', [dateStr(month, 1), monthEnd(month)]);
-  const { skipSet } = await monthData(month);
+  const { skipSet, customers, plans } = await monthData(month);
   const skips = [...skipSet].map((k) => { const [c, d, s] = k.split('|'); return { c, d, s }; });
-  return { month, days: daysIn(month), customers: await all('SELECT * FROM customers ORDER BY id'), entries, skips };
+  return { month, days: daysIn(month), customers: customers.map((c) => ({ ...c, plans: plans.get(c.id) || [] })), entries, skips };
 });
 // qty null/'' => clear the override (back to default); 0 => no delivery.
 route('PUT', '/api/delivery', async ({ body, user }) => {
@@ -305,9 +325,9 @@ route('GET', '/api/route', async ({ q, user }) => {
   const skipBy = new Map();
   for (const k of await all("SELECT * FROM skips WHERE status='active' AND from_date<=? AND to_date>=?", [q.date, q.date]))
     if (sessionsOf(k.session).includes(q.session)) skipBy.set(k.customer_id, { note: k.note, to: k.to_date });
-  const items = [];
+  const items = [], plans = await plansOf();
   for (const c of await all('SELECT * FROM customers ORDER BY id')) {
-    const def = c.status === 'Active' ? (q.session === 'AM' ? c.am : c.pm) : 0;
+    const def = defQty(planOn(c, plans.get(c.id), q.date), q.session);
     const qty = ov.has(c.id) ? ov.get(c.id) : null;
     if (def > 0 || (qty !== null && qty > 0)) items.push({ id: c.id, name: c.name, def, qty, skip: skipBy.get(c.id) || null, unavail: unv.has(c.id) && qty === 0 });
   }
@@ -332,10 +352,63 @@ route('PUT', '/api/password', async ({ body, user }) => {
 route('GET', '/api/export', async ({ user }) => {
   need(user.role === 'admin', 'Admin only');
   const out = {};
-  for (const [key, sql] of [['Customers', 'SELECT * FROM customers ORDER BY id'], ['Deliveries', 'SELECT * FROM deliveries ORDER BY date, customer_id, session'], ['Payments', 'SELECT * FROM payments ORDER BY date, id'],
+  for (const [key, sql] of [['Customers', 'SELECT * FROM customers ORDER BY id'], ['Customer Changes', 'SELECT * FROM customer_plans ORDER BY customer_id, from_date'],['Deliveries', 'SELECT * FROM deliveries ORDER BY date, customer_id, session'], ['Payments', 'SELECT * FROM payments ORDER BY date, id'],
     ['Income', 'SELECT * FROM income ORDER BY date, id'], ['Expenses', 'SELECT * FROM expenses ORDER BY date, id'], ['Cows', 'SELECT * FROM cows ORDER BY id'], ['Cow Yield', 'SELECT * FROM cow_yield ORDER BY date, cow_id'],
     ['Extra Items', 'SELECT * FROM products ORDER BY id'], ['Extra Bookings', 'SELECT * FROM product_orders ORDER BY id'], ['Cow AI', 'SELECT * FROM cow_ai ORDER BY id'], ['Pauses', 'SELECT * FROM skips ORDER BY id'], ['Milk Unavailable', 'SELECT * FROM milk_unavailable ORDER BY date, customer_id']]) out[key] = await all(sql);
   return out;
+});
+
+// Customers: an add or edit says from which date it applies (a customer who joins mid-month, or changes quantity or price).
+// An edit with no date applies to every date, past ones too (for fixing a mistake), and clears the history.
+// These are registered before the generic master routes, so they win.
+const PLAN_SQL = 'INSERT OR REPLACE INTO customer_plans(customer_id,from_date,am,pm,price,status) VALUES(?,?,?,?,?,?)';
+const samePlan = (a, b) => a.am === b.am && a.pm === b.pm && a.price === b.price && a.status === b.status;
+route('GET', '/api/customers', async () => {
+  const plans = await plansOf();
+  return (await all('SELECT * FROM customers ORDER BY id')).map((c) => ({ ...c, plans: plans.get(c.id) || [] }));
+});
+route('POST', '/api/customers', async ({ body }) => {
+  const from = body.from_date ? validDate(body.from_date) : null;
+  const o = await pick(masters.customers.fields, body); const id = await nextId('customers', 'GRV', 3);
+  const cols = ['id', ...Object.keys(o)];
+  await run(`INSERT INTO customers(${cols.join(',')}) VALUES(${cols.map(() => '?').join(',')})`, [id, ...Object.values(o)]);
+  if (from) await run(PLAN_SQL, [id, from, o.am, o.pm, o.price, o.status]); // no milk before the start date
+  return { id, ...o };
+});
+route('PUT', '/api/customers/([^/]+)', async ({ body, m }) => {
+  const old = await get('SELECT * FROM customers WHERE id=?', [m[1]]); need(old, 'not found');
+  const o = await pick(masters.customers.fields, body);
+  if (body.bill_name === undefined) delete o.bill_name; // an edit that doesn't mention it must not wipe the customer's own name
+  if (!body.from_date) await run('DELETE FROM customer_plans WHERE customer_id=?', [old.id]);
+  else {
+    const from = validDate(body.from_date);
+    let plans = (await plansOf(old.id)).get(old.id) || [];
+    if (!samePlan(planOn(old, plans, from), o) || plans.some((p) => p.from_date > from)) { // a name or phone edit adds no history
+      if (!plans.length) await run(PLAN_SQL, [old.id, BASE_DATE, old.am, old.pm, old.price, old.status]); // earlier dates keep the old quantity
+      await run('DELETE FROM customer_plans WHERE customer_id=? AND from_date>?', [old.id, from]); // "from this date on" replaces later changes
+      await run(PLAN_SQL, [old.id, from, o.am, o.pm, o.price, o.status]);
+      plans = (await plansOf(old.id)).get(old.id);
+    }
+    const now = planOn(old, plans, today()); // the customer row shows what applies today; a change dated later waits for its day
+    if (now.from_date) Object.assign(o, { am: now.am, pm: now.pm, price: now.price, status: now.status });
+  }
+  await run(`UPDATE customers SET ${Object.keys(o).map((k) => k + '=?').join(',')} WHERE id=?`, [...Object.values(o), old.id]);
+  return { id: old.id, ...o };
+});
+// Undo one dated change: the change before it carries on in its place
+route('DELETE', '/api/customers/([^/]+)/plans/([0-9-]+)', async ({ m }) => {
+  const c = await get('SELECT * FROM customers WHERE id=?', [m[1]]); need(c, 'not found');
+  need(m[2] !== BASE_DATE, 'This is how the customer started — edit the customer instead');
+  const r = await run('DELETE FROM customer_plans WHERE customer_id=? AND from_date=?', [c.id, m[2]]); need(r.changes, 'That change is not there any more');
+  const plans = (await plansOf(c.id)).get(c.id) || [];
+  if (plans.length === 1 && plans[0].from_date === BASE_DATE) { // only the starting values are left, so there is no history any more
+    await run('DELETE FROM customer_plans WHERE customer_id=?', [c.id]);
+    await run('UPDATE customers SET am=?, pm=?, price=?, status=? WHERE id=?', [plans[0].am, plans[0].pm, plans[0].price, plans[0].status, c.id]);
+  } else {
+    const now = planOn(c, plans, today());
+    if (now.from_date) await run('UPDATE customers SET am=?, pm=?, price=?, status=? WHERE id=?', [now.am, now.pm, now.price, now.status, c.id]);
+  }
+  return { ok: true };
 });
 
 for (const [name, cfg] of Object.entries(masters)) {
@@ -357,7 +430,9 @@ for (const [name, cfg] of Object.entries(masters)) {
     const dep = name === 'customers' ? ['payments', 'deliveries'] : ['cow_yield', 'cow_ai'];
     const col = name === 'customers' ? 'customer_id' : 'cow_id';
     for (const t of dep) if (await get(`SELECT 1 x FROM ${t} WHERE ${col}=?`, [m[1]])) need(false, `Has ${t} records — mark Inactive instead of deleting.`);
-    await run(`DELETE FROM ${cfg.table} WHERE id=?`, [m[1]]); return { ok: true };
+    await run(`DELETE FROM ${cfg.table} WHERE id=?`, [m[1]]);
+    if (name === 'customers') await run('DELETE FROM customer_plans WHERE customer_id=?', [m[1]]);
+    return { ok: true };
   });
 }
 for (const [name, cfg] of Object.entries(resources)) {
@@ -546,22 +621,22 @@ route('GET', '/api/portal', async ({ q, user }) => {
   const month = q.month ? validMonth(q.month) : cutoff.slice(0, 7);
   need(month <= today().slice(0, 7), 'No bills for future months');
   const c = await get('SELECT * FROM customers WHERE id=?', [cid]); need(c, 'customer not found');
-  const { n, eff } = await monthData(month);
+  const { n, eff, planAt } = await monthData(month);
   const unv = new Set((await all('SELECT date, session FROM milk_unavailable WHERE customer_id=? AND date>=? AND date<=?', [cid, dateStr(month, 1), monthEnd(month)])).map((r) => r.date + '|' + r.session));
-  const days = []; let am = 0, pm = 0;
+  const days = []; let am = 0, pm = 0, milk = 0;
   for (let d = 1; d <= n; d++) {
     const ds = dateStr(month, d);
     if (ds > cutoff) { days.push({ date: ds, am: null, pm: null }); continue; } // not yet updated
-    const a = eff(c, ds, 'AM'), p = eff(c, ds, 'PM'); am += a; pm += p;
-    // display-only status for the customer's calendar: Delivered / Paused / Milk Unavailable
-    const st = (unv.has(ds + '|AM') && a === 0) || (unv.has(ds + '|PM') && p === 0) ? 'Unavailable' : (a === 0 && c.status === 'Active' && c.am > 0) || (p === 0 && c.status === 'Active' && c.pm > 0) || a + p === 0 ? 'Paused' : 'Delivered'; // a paused morning OR evening shows the day as Paused
+    const a = eff(c, ds, 'AM'), p = eff(c, ds, 'PM'), plan = planAt(c, ds); am += a; pm += p; milk += (a + p) * plan.price;
+    // display-only status for the customer's calendar: Delivered / Paused / Milk Unavailable (blank before they started)
+    const st = (unv.has(ds + '|AM') && a === 0) || (unv.has(ds + '|PM') && p === 0) ? 'Unavailable' : a + p === 0 && plan.status !== 'Active' ? '' : (a === 0 && defQty(plan, 'AM') > 0) || (p === 0 && defQty(plan, 'PM') > 0) || a + p === 0 ? 'Paused' : 'Delivered'; // a paused morning OR evening shows the day as Paused
     days.push({ date: ds, am: a, pm: p, st });
   }
   const payments = await all('SELECT date, amount, mode FROM payments WHERE customer_id=? AND bill_month=? ORDER BY date', [cid, month]);
-  const paid = payments.reduce((a, x) => a + x.amount, 0), amount = r2((am + pm) * c.price);
+  const paid = payments.reduce((a, x) => a + x.amount, 0), amount = r2(milk), now = planAt(c, today());
   const skips = (await all("SELECT k.*, ? AS name FROM skips k WHERE customer_id=? AND status='active' AND to_date >= ? ORDER BY from_date", [c.bill_name || '', cid, today()])).map(skipRow);
   const extras = await extrasIn(month, cid), extras_total = r2(extras.reduce((t, x) => t + x.qty * x.price, 0)), milk_amount = amount;
-  return { customer: { id: c.id, name: c.bill_name || '', price: c.price, am: c.am, pm: c.pm }, needs_name: !c.bill_name, month, cutoff, update_hour: BILL_HOUR, today: today(), tomorrow: tomorrow(),
+  return { customer: { id: c.id, name: c.bill_name || '', price: now.price, am: defQty(now, 'AM'), pm: defQty(now, 'PM') }, needs_name: !c.bill_name, month, cutoff, update_hour: BILL_HOUR, today: today(), tomorrow: tomorrow(),
     extras, extras_total, milk_amount, days, am: r2(am), pm: r2(pm), total: r2(am + pm), amount: r2(amount + extras_total), paid: r2(paid), due: r2(amount + extras_total - paid), payments, skips,
     default_password: !(await get('SELECT 1 x FROM customer_auth WHERE customer_id=?', [cid])) };
 });

@@ -37,6 +37,20 @@ const monthInput = $('#month');
 monthInput.value = S.month;
 monthInput.addEventListener('change', () => { if (!monthInput.value) return; S.month = monthInput.value; localStorage.setItem('grv.month', S.month); render(); });
 const monthDefaultDate = () => (today().startsWith(S.month) ? today() : S.month + '-01');
+const setMonth = (m) => { S.month = monthInput.value = m; localStorage.setItem('grv.month', m); D.data = null; render(); };
+const shiftMonth = (m, n) => { const [y, mo] = m.split('-').map(Number), d = new Date(y, mo - 1 + n, 1); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; };
+// ◀ month ▶ on the page itself, for pages people read month by month
+const monthPicker = () => h('div', { class: 'bar monthpick' }, h('button', { onclick: () => setMonth(shiftMonth(S.month, -1)), 'aria-label': 'Previous month' }, '◀'),
+  h('input', { type: 'month', value: S.month, onchange: (e) => { if (e.target.value) setMonth(e.target.value); } }),
+  h('button', { onclick: () => setMonth(shiftMonth(S.month, 1)), 'aria-label': 'Next month' }, '▶'),
+  S.month !== today().slice(0, 7) ? h('button', { class: 'link', onclick: () => setMonth(today().slice(0, 7)) }, 'This month') : null);
+// a customer's quantity and price on a date, from their dated changes (same rule as the server's planOn)
+const planOn = (c, date) => {
+  if (!c.plans || !c.plans.length) return c;
+  let p = null;
+  for (const r of c.plans) { if (r.from_date <= date) p = r; else break; }
+  return p || { am: 0, pm: 0, price: c.plans[0].price, status: 'Inactive' };
+};
 
 // A password box with a Show / Hide button so people can check what they typed.
 function pwBox(input) {
@@ -87,7 +101,7 @@ pages.dashboard = async (v) => {
   const d = await api('dashboard?month=' + S.month);
   const max = Math.max(1, ...d.daily.map((x) => x.total));
   const alerts = await api('cow-alerts');
-  v.append(h('h1', {}, 'Dashboard'), h('p', { class: 'sub' }, monthLabel(S.month)),
+  v.append(h('h1', {}, 'Dashboard'), h('p', { class: 'sub' }, monthLabel(S.month)), monthPicker(),
     alerts.length ? h('div', { class: 'card alerts' }, h('h2', { style: 'margin-top:0' }, '🐄 Cow reminders (AI & pregnancy)'), alerts.map((a) => aiAlert(a, () => render()))) : null,
     h('div', { class: 'cards' },
       [['Active Customers', `${d.active} / ${d.customers}`], ['Milk Sold', lit(d.litres) + ' L'], ['Total Sales', inr(d.sales)], ['Payments Collected', inr(d.collected)],
@@ -165,8 +179,8 @@ pages.delivery = async (v) => {
   if (D.month !== S.month || !D.data) { D.data = await api('delivery?month=' + S.month); D.month = S.month; D.ov = new Map(D.data.entries.map((e) => [`${e.c}|${e.d}|${e.s}`, e.q])); D.skips = new Set(D.data.skips.map((e) => `${e.c}|${e.d}|${e.s}`)); }
   if (!D.date || !D.date.startsWith(S.month)) D.date = monthDefaultDate();
   const dayStr = (n) => `${S.month}-${pad(n)}`;
-  const defQ = (c, s) => (c.status === 'Active' ? (s === 'AM' ? c.am : c.pm) : 0);
-  const baseQ = (c, date, s) => (D.skips.has(`${c.id}|${date}|${s}`) ? 0 : defQ(c, s)); // customer "no milk" request = 0
+  const defQ = (c, s, date = D.date) => { const p = planOn(c, date); return p.status === 'Active' ? (s === 'AM' ? p.am : p.pm) : 0; };
+  const baseQ = (c, date, s) => (D.skips.has(`${c.id}|${date}|${s}`) ? 0 : defQ(c, s, date)); // customer "no milk" request = 0
   const save = guard(async (c, date, s, input) => {
     const raw = input.value.trim(); const k = `${c.id}|${date}|${s}`;
     if (raw !== '' && !(Number(raw) >= 0)) { toast('Enter a number ≥ 0', true); input.value = D.ov.has(k) ? D.ov.get(k) : ''; return; }
@@ -205,7 +219,7 @@ pages.delivery = async (v) => {
     body = h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['ID', 'Customer', 'AM default', 'AM actual', 'PM default', 'PM actual', 'Litres', 'Amount', ''].map((t, i) => h('th', { class: i > 1 && i < 8 ? 'n' : '' }, t)))),
       h('tbody', {}, rows.map((c) => {
         const tl = h('td', { class: 'n' }), am = h('td', { class: 'n' });
-        const upd = () => { const t = eff(c, D.date, 'AM') + eff(c, D.date, 'PM'); tl.textContent = lit(t); am.textContent = inr(t * c.price); };
+        const upd = () => { const t = eff(c, D.date, 'AM') + eff(c, D.date, 'PM'); tl.textContent = lit(t); am.textContent = inr(t * planOn(c, D.date).price); };
         const a = qInput(c, D.date, 'AM'), p = qInput(c, D.date, 'PM');
         a.addEventListener('change', upd); p.addEventListener('change', upd); upd();
         // Absent toggle: marks every session this customer normally takes as 0; click again to undo.
@@ -232,7 +246,7 @@ pages.delivery = async (v) => {
         const tot = h('td', { class: 'n' });
         const upd = () => { let t = 0; for (const n of days) t += eff(c, dayStr(n), D.session); tot.textContent = lit(t); };
         upd();
-        return h('tr', {}, h('td', {}, c.name), h('td', { class: 'n mute' }, lit(defQ(c, D.session))),
+        return h('tr', {}, h('td', {}, c.name), h('td', { class: 'n mute' }, lit(defQ(c, D.session, dayStr(D.data.days)))),
           days.map((n) => { const i = qInput(c, dayStr(n), D.session); i.addEventListener('change', upd); return h('td', { class: 'gridcell' }, i); }), tot);
       }))));
   }
@@ -338,12 +352,41 @@ const sumRow = (len, idx, val) => Array.from({ length: len }, (_, i) => (i === i
 
 pages.customers = crud({ title: 'Customer', sub: 'Master list — AM/PM defaults and price used for daily delivery and billing.', resource: 'customers', monthly: false, master: true,
   fields: () => [{ key: 'name', label: 'Nickname (only you see this)', required: true }, { key: 'bill_name', label: "Name on bill (the customer's own — they can also set it)" }, { key: 'phone', label: 'Phone' }, { key: 'am', label: 'AM default qty (L)', type: 'number', default: 0 }, { key: 'pm', label: 'PM default qty (L)', type: 'number', default: 0 },
-    { key: 'price', label: 'Price per L (₹)', type: 'number', default: 55 }, { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Inactive'] }],
+    { key: 'price', label: 'Price per L (₹)', type: 'number', default: 55 }, { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Inactive'] },
+    { key: 'from_date', label: 'From date — new customer: the day milk starts. Edit: the day the new quantity / price / status starts (earlier days stay as they were). Leave empty to change every date, past ones too.', type: 'date', default: today() }],
   cols: [{ label: 'ID', key: 'id' }, { label: 'Nickname', key: 'name' }, { label: 'Name on bill', render: (r) => r.bill_name || h('span', { class: 'mute' }, '—') }, { label: 'Phone', key: 'phone' }, { label: 'AM (L)', num: 1, render: (r) => lit(r.am) }, { label: 'PM (L)', num: 1, render: (r) => lit(r.pm) },
-    { label: 'Total (L)', num: 1, render: (r) => lit(r.am + r.pm) }, { label: 'Price/L', num: 1, render: (r) => inr(r.price) }, { label: 'Status', render: (r) => pill(r.status) }],
+    { label: 'Total (L)', num: 1, render: (r) => lit(r.am + r.pm) }, { label: 'Price/L', num: 1, render: (r) => inr(r.price) }, { label: 'Status', render: (r) => pill(r.status) },
+    { label: 'From', render: (r) => { // when the current quantity started, and any change dated later
+      const t = today(), cur = (r.plans || []).filter((p) => p.from_date <= t && p.from_date > '0000-01-01').pop(), next = (r.plans || []).filter((p) => p.from_date > t);
+      return h('span', {}, cur ? dayLabel(cur.from_date) : h('span', { class: 'mute' }, '—'),
+        next.map((p) => h('div', { class: 'tag' }, `From ${dayLabel(p.from_date)}: ${p.status === 'Active' ? `AM ${lit(p.am)} · PM ${lit(p.pm)} · ${inr(p.price)}` : 'Inactive'}`)));
+    } }],
   total: (rs, n) => sumRow(n, 6, lit(rs.reduce((a, r) => a + r.am + r.pm, 0))),
-  rowExtra: (r) => h('button', { class: 'link', onclick: () => customerLogin(r) }, 'Login'),
+  rowExtra: (r) => h('span', {}, h('button', { class: 'link', onclick: () => customerHistory(r) }, 'History'), h('button', { class: 'link', onclick: () => customerLogin(r) }, 'Login')),
 });
+
+// A customer's quantity / price changes, oldest first, with Delete to undo a wrong one.
+async function customerHistory(c) {
+  const dlg = $('#dlg');
+  const draw = async () => {
+    const plans = ((await api('customers')).find((x) => x.id === c.id) || {}).plans || [];
+    const t = today(), cur = plans.filter((p) => p.from_date <= t).pop();
+    const what = (p) => (p.status === 'Active' ? `AM ${lit(p.am)} L · PM ${lit(p.pm)} L · ${inr(p.price)}/L` : 'Inactive (no milk)');
+    const when = (p) => (p.from_date === '0000-01-01' ? 'From the start' : 'From ' + new Date(p.from_date + 'T00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }));
+    dlg.innerHTML = '';
+    dlg.append(h('div', { class: 'form' }, h('h1', {}, `History — ${c.name}`),
+      plans.length ? h('p', { class: 'tag' }, 'Each line applies from its date until the next one. Delete a wrong change and the one before it carries on.')
+        : h('p', { class: 'mute' }, `No dated changes yet. ${what(c)} applies to every date. Use Edit with a From date to record a change.`),
+      plans.length ? table([{ label: 'When', render: (p) => h('b', {}, when(p)) }, { label: 'Quantity & price', render: what },
+        { label: '', render: (p) => p === cur ? pill('Now') : p.from_date > t ? pill('Upcoming') : '' },
+        { label: '', render: (p) => (p.from_date === '0000-01-01' ? '' : h('button', { type: 'button', class: 'link del', onclick: guard(async () => {
+          if (!confirm(`Delete the change ${when(p).toLowerCase()}? Bills from that date will use the quantity before it.`)) return;
+          await api(`customers/${encodeURIComponent(c.id)}/plans/${p.from_date}`, 'DELETE'); toast('Change deleted'); await draw();
+        }) }, 'Delete')) }], plans) : null,
+      h('div', { class: 'acts' }, h('button', { type: 'button', onclick: () => { dlg.close(); render(); } }, 'Close'))));
+  };
+  await draw(); dlg.showModal();
+}
 
 pages.income = crud({ title: 'Income', sub: 'Non-bill income such as curd, ghee or egg sales.', resource: 'income',
   fields: () => [{ key: 'date', label: 'Date', type: 'date', default: monthDefaultDate(), required: true }, { key: 'type', label: 'Income type', type: 'select', options: S.lists.income_types }, { key: 'source', label: 'Customer / source' },
