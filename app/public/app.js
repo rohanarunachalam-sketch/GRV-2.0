@@ -736,7 +736,7 @@ pages.notices = async (v) => {
 // ---------- customer portal ----------
 const P = { month: null, tab: 'bill' };
 // UPI pay: the button opens GPay/PhonePe/Paytm with our UPI ID and the amount filled in. On a big screen (computer) a QR code is added to scan with the phone.
-const UPI = { pa: 'rajeshrajive130@okhdfcbank', pn: 'GRV Dairy' };
+const UPI = { pa: 'rohanart17-1@oksbi', pn: 'GRV Dairy' };
 const upiLink = (amt, note) => `upi://pay?pa=${UPI.pa}&pn=${encodeURIComponent(UPI.pn)}&am=${Number(amt).toFixed(2)}&cu=INR&tn=${encodeURIComponent(note)}`;
 function payBox(amt, note) {
   const link = upiLink(amt, note);
