@@ -258,6 +258,18 @@ route('PUT', '/api/lists', async ({ body }) => {
   return lists();
 });
 route('GET', '/api/dashboard', ({ q }) => dashboard(validMonth(q.month)));
+// milk yield vs sold for each day from..to (at most a year), for the dashboard summary and its Excel download
+route('GET', '/api/milk-summary', async ({ q }) => {
+  const from = validDate(q.from), to = validDate(q.to);
+  need(from <= to, 'From date must be before To date'); need(to <= addDays(from, 366), 'Pick at most one year');
+  const months = []; for (let m = from.slice(0, 7); m <= to.slice(0, 7); m = addDays(m + '-28', 5).slice(0, 7)) months.push(m);
+  const [sold, yields] = await Promise.all([Promise.all(months.map(daily)), all('SELECT date, SUM(am) am, SUM(pm) pm FROM cow_yield WHERE date>=? AND date<=? GROUP BY date', [from, to])]);
+  const y = new Map(yields.map((r) => [r.date, r]));
+  return sold.flat().filter((d) => d.date >= from && d.date <= to).map((d) => {
+    const r = y.get(d.date) || { am: 0, pm: 0 }, yt = r2(r.am + r.pm);
+    return { date: d.date, yield_am: r2(r.am), yield_pm: r2(r.pm), yield: yt, sold_am: d.am, sold_pm: d.pm, sold: d.total, left: r2(yt - d.total) };
+  });
+});
 route('GET', '/api/pnl', ({ q }) => pnl(validMonth(q.month)));
 route('GET', '/api/daily', ({ q }) => daily(validMonth(q.month)));
 route('GET', '/api/bills', ({ q }) => bills(validMonth(q.month)));

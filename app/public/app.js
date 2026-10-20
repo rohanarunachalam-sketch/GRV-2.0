@@ -126,6 +126,49 @@ function todayCard(t) {
     !t.yield ? h('p', { class: 'tag' }, 'No cow yield entered for today yet.') : null);
 }
 
+// Milk yield vs sold for any days you pick, with a per-day table and an Excel download.
+const MS = { from: null, to: null };
+function milkSummary() {
+  const t = today(), first = (m) => m + '-01', last = (m) => { const [y, mo] = m.split('-').map(Number); return `${m}-${pad(new Date(y, mo, 0).getDate())}`; };
+  const back = (n) => { const d = new Date(t + 'T00:00'); d.setDate(d.getDate() - n); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+  if (!MS.from) { MS.from = first(S.month); MS.to = S.month === t.slice(0, 7) ? t : last(S.month); }
+  const fromIn = h('input', { type: 'date', value: MS.from, max: t }), toIn = h('input', { type: 'date', value: MS.to, max: t });
+  const out = h('div');
+  let rows = [];
+  const show = guard(async () => {
+    if (!fromIn.value || !toIn.value) return;
+    MS.from = fromIn.value; MS.to = toIn.value;
+    out.innerHTML = ''; out.append(h('p', { class: 'tag' }, 'Loading…'));
+    rows = await api(`milk-summary?from=${MS.from}&to=${MS.to}`);
+    const sum = (k) => Math.round(rows.reduce((a, r) => a + r[k], 0) * 100) / 100, left = sum('left');
+    const stat = (l, val, c) => h('div', {}, h('div', { class: 'l' }, l), h('div', { class: 'v ' + (c || '') }, val));
+    out.innerHTML = '';
+    out.append(h('div', { class: 'tm-row' }, stat('Total milk yield', lit(sum('yield')) + ' L'), stat('Total sold', lit(sum('sold')) + ' L'),
+      stat(left >= 0 ? 'Left over' : 'Short', lit(Math.abs(left)) + ' L', left >= 0 ? 'good' : 'bad'), stat('Days', rows.length)),
+      h('details', { class: 'ms-days' }, h('summary', {}, 'Show each day'), table([{ label: 'Date', render: (r) => dayLabel(r.date) }, { label: 'Yield L', num: 1, render: (r) => lit(r.yield) }, { label: 'Sold L', num: 1, render: (r) => lit(r.sold) },
+        { label: 'Left / short', num: 1, render: (r) => h('span', { class: r.left < 0 ? 'bad' : '' }, (r.left < 0 ? '−' : '') + lit(Math.abs(r.left))) }], rows,
+      { foot: ['Total', lit(sum('yield')), lit(sum('sold')), (left < 0 ? '−' : '') + lit(Math.abs(left))] })));
+  });
+  const preset = (a, b) => () => { fromIn.value = a; toIn.value = b; show(); };
+  const lm = shiftMonth(t.slice(0, 7), -1);
+  const download = guard(async () => {
+    if (!rows.length) return toast('Nothing to download', true);
+    const sheet = rows.map((r) => ({ Date: r.date, 'Yield AM (L)': r.yield_am, 'Yield PM (L)': r.yield_pm, 'Total yield (L)': r.yield, 'Sold AM (L)': r.sold_am, 'Sold PM (L)': r.sold_pm, 'Total sold (L)': r.sold, 'Left over / short (L)': r.left }));
+    const tot = (k) => Math.round(sheet.reduce((a, r) => a + r[k], 0) * 100) / 100;
+    sheet.push(Object.fromEntries(Object.keys(sheet[0]).map((k) => [k, k === 'Date' ? 'Total' : tot(k)])));
+    const blob = new Blob([makeXlsx({ 'Milk summary': sheet })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const a = h('a', { href: URL.createObjectURL(blob), download: `GRV-Milk-${MS.from}-to-${MS.to}.xlsx` });
+    document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast('Excel file downloaded');
+  });
+  const card = h('div', { class: 'card todaymilk' }, h('h2', { style: 'margin-top:0' }, 'Milk summary — yield vs sold'),
+    h('div', { class: 'bar' }, h('label', { class: 'ms-l' }, 'From ', fromIn), h('label', { class: 'ms-l' }, 'To ', toIn), h('button', { class: 'pri', onclick: show }, 'Show'), h('button', { onclick: download }, '⬇ Download Excel')),
+    h('div', { class: 'bar' }, h('button', { class: 'link', onclick: preset(first(t.slice(0, 7)), t) }, 'This month'), h('button', { class: 'link', onclick: preset(first(lm), last(lm)) }, 'Last month'),
+      h('button', { class: 'link', onclick: preset(back(6), t) }, 'Last 7 days'), h('button', { class: 'link', onclick: preset(t, t) }, 'Today')), out);
+  show();
+  return card;
+}
+
 // One cow reminder: confirmation due, or a 3-monthly pregnancy check-in. "Done" hides a check-in until the next 3-month mark.
 function aiAlert(a, after) {
   const text = a.type === 'confirm' ? `${a.cow_name}: AI was ${a.days} days ago (${dayLabel(a.ai_date)}) — please confirm if she is pregnant.`
@@ -515,6 +558,7 @@ pages.yield = async (v) => {
 pages.daily = async (v) => {
   const rows = await api('daily?month=' + S.month);
   v.append(h('h1', {}, 'Daily Summary'), h('p', { class: 'sub' }, `${monthLabel(S.month)} — litres, deliveries and estimated sales per day.`),
+    milkSummary(), h('h2', {}, `Deliveries — ${monthLabel(S.month)}`),
     table([{ label: 'Date', render: (r) => dayLabel(r.date) }, { label: 'AM L', num: 1, render: (r) => lit(r.am) }, { label: 'PM L', num: 1, render: (r) => lit(r.pm) }, { label: 'Total L', num: 1, render: (r) => lit(r.total) },
       { label: 'Deliveries', num: 1, key: 'served' }, { label: 'Absent entries', num: 1, key: 'absent' }, { label: 'Est. sales', num: 1, render: (r) => inr(r.sales) }], rows,
       { foot: ['Total', lit(rows.reduce((a, r) => a + r.am, 0)), lit(rows.reduce((a, r) => a + r.pm, 0)), lit(rows.reduce((a, r) => a + r.total, 0)), '', rows.reduce((a, r) => a + r.absent, 0), inr(rows.reduce((a, r) => a + r.sales, 0))] }));
