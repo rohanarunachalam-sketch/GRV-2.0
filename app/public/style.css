@@ -373,3 +373,12 @@ body.customer .bar .seg{width:100%}
 .todaymilk .l{color:var(--mute);font-size:13px;font-weight:600}
 .todaymilk .v{font-size:24px;font-weight:750}
 .todaymilk .v.good{color:var(--good)}.todaymilk .v.bad{color:var(--bad)}
+.freeze2 .idsub{display:none}
+/* phones: one slim frozen column (name, ID underneath) so more of the row fits on screen */
+@media(max-width:800px){
+  .freeze2 th:first-child,.freeze2 td:first-child{display:none}
+  .freeze2 th:nth-child(2),.freeze2 td:nth-child(2){left:0;width:112px;min-width:112px;max-width:112px;padding:8px 10px;white-space:normal;box-sizing:border-box}
+  .freeze2 td:nth-child(2) .nm{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-weight:600;line-height:1.25;word-break:break-word}
+  .freeze2 .idsub{display:block;font-size:11px;color:var(--mute);margin-top:2px}
+  .freeze2 th,.freeze2 td{padding:9px 10px}
+}
