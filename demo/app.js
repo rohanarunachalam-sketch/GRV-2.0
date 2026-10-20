@@ -37,6 +37,20 @@ const monthInput = $('#month');
 monthInput.value = S.month;
 monthInput.addEventListener('change', () => { if (!monthInput.value) return; S.month = monthInput.value; localStorage.setItem('grv.month', S.month); render(); });
 const monthDefaultDate = () => (today().startsWith(S.month) ? today() : S.month + '-01');
+const setMonth = (m) => { S.month = monthInput.value = m; localStorage.setItem('grv.month', m); D.data = null; render(); };
+const shiftMonth = (m, n) => { const [y, mo] = m.split('-').map(Number), d = new Date(y, mo - 1 + n, 1); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; };
+// ◀ month ▶ on the page itself, for pages people read month by month
+const monthPicker = () => h('div', { class: 'bar monthpick' }, h('button', { onclick: () => setMonth(shiftMonth(S.month, -1)), 'aria-label': 'Previous month' }, '◀'),
+  h('input', { type: 'month', value: S.month, onchange: (e) => { if (e.target.value) setMonth(e.target.value); } }),
+  h('button', { onclick: () => setMonth(shiftMonth(S.month, 1)), 'aria-label': 'Next month' }, '▶'),
+  S.month !== today().slice(0, 7) ? h('button', { class: 'link', onclick: () => setMonth(today().slice(0, 7)) }, 'This month') : null);
+// a customer's quantity and price on a date, from their dated changes (same rule as the server's planOn)
+const planOn = (c, date) => {
+  if (!c.plans || !c.plans.length) return c;
+  let p = null;
+  for (const r of c.plans) { if (r.from_date <= date) p = r; else break; }
+  return p || { am: 0, pm: 0, price: c.plans[0].price, status: 'Inactive' };
+};
 
 // A password box with a Show / Hide button so people can check what they typed.
 function pwBox(input) {
@@ -70,12 +84,14 @@ function openForm({ title, fields, values = {}, onSave, intro, saveLabel = 'Save
 }
 
 // ---------- generic table ----------
-function table(cols, rows, { foot } = {}) {
-  return h('div', { class: 'tablewrap' }, h('table', {},
+function table(cols, rows, { foot, cls } = {}) {
+  return h('div', { class: 'tablewrap' }, h('table', { class: cls },
     h('thead', {}, h('tr', {}, cols.map((c) => h('th', { class: c.num ? 'n' : '' }, c.label)))),
     h('tbody', {}, rows.map((r) => h('tr', {}, cols.map((c) => h('td', { class: c.num ? 'n' : '' }, c.render ? c.render(r) : r[c.key] ?? ''))))),
     foot ? h('tfoot', {}, h('tr', {}, cols.map((c, i) => h('td', { class: c.num ? 'n' : '' }, foot[i] ?? '')))) : null));
 }
+// Name cell for tables with frozen columns: on phones the ID column is hidden and the ID shows under the name instead.
+const nameCell = (name, id, ...extra) => h('span', {}, h('span', { class: 'nm' }, name), h('span', { class: 'idsub' }, id), extra);
 const pill = (s) => h('span', { class: 'pill ' + String(s).split(' ')[0] }, s);
 const actions = (edit, del) => h('span', {}, h('button', { class: 'link', onclick: edit }, 'Edit'), h('button', { class: 'link del', onclick: del }, 'Delete'));
 const confirmDel = (what) => confirm(`Delete ${what}? This cannot be undone.`);
@@ -87,17 +103,71 @@ pages.dashboard = async (v) => {
   const d = await api('dashboard?month=' + S.month);
   const max = Math.max(1, ...d.daily.map((x) => x.total));
   const alerts = await api('cow-alerts');
-  v.append(h('h1', {}, 'Dashboard'), h('p', { class: 'sub' }, monthLabel(S.month)),
+  v.append(h('h1', {}, 'Dashboard'), h('p', { class: 'sub' }, monthLabel(S.month)), monthPicker(),
     alerts.length ? h('div', { class: 'card alerts' }, h('h2', { style: 'margin-top:0' }, '🐄 Cow reminders (AI & pregnancy)'), alerts.map((a) => aiAlert(a, () => render()))) : null,
     h('div', { class: 'cards' },
       [['Active Customers', `${d.active} / ${d.customers}`], ['Milk Sold', lit(d.litres) + ' L'], ['Total Sales', inr(d.sales)], ['Payments Collected', inr(d.collected)],
         ['Pending Amount', inr(d.pending), d.pending > 0 ? 'warn' : ''], ['Other Income', inr(d.other_income)], ['Expenses', inr(d.expenses)], ['Net Profit', inr(d.net), d.net >= 0 ? 'good' : 'bad'],
         ['Cow Yield', lit(d.yield_litres) + ' L']].map(([l, val, c]) => h('div', { class: 'card' }, h('div', { class: 'l' }, l), h('div', { class: 'v ' + (c || '') }, val)))),
+    todayCard(d.today),
     h('div', { class: 'grid2' },
       h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Litres per day'), h('div', { class: 'spark' }, d.daily.map((x) => h('div', { style: `height:${(x.total / max) * 100}%`, title: `${dayLabel(x.date)}: ${lit(x.total)} L` })))),
       h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Highest pending'),
         d.top_pending.length ? h('div', { class: 'bars' }, d.top_pending.map((p) => h('div', { class: 'row' }, h('span', { class: 'name' }, p.name), h('span', { class: 'bar-fill', style: `width:${(p.pending / d.top_pending[0].pending) * 160}px` }), inr(p.pending)))) : h('p', { class: 'mute' }, 'Nothing pending 🎉'))));
 };
+
+// Today's milk: what the cows gave vs what went to customers, and what is left over (or short).
+function todayCard(t) {
+  const diff = Math.round((t.yield - t.sold) * 100) / 100;
+  const stat = (l, val, c) => h('div', {}, h('div', { class: 'l' }, l), h('div', { class: 'v ' + (c || '') }, val));
+  return h('div', { class: 'card todaymilk' }, h('h2', { style: 'margin-top:0' }, `Today's milk — ${dayLabel(t.date)}`),
+    h('div', { class: 'tm-row' }, stat('Total milk yield', lit(t.yield) + ' L'), stat('Total sold', lit(t.sold) + ' L'),
+      stat(diff >= 0 ? 'Left over' : 'Short', lit(Math.abs(diff)) + ' L', diff >= 0 ? 'good' : 'bad')),
+    !t.yield ? h('p', { class: 'tag' }, 'No cow yield entered for today yet.') : null);
+}
+
+// Milk yield vs sold for any days you pick, with a per-day table and an Excel download.
+const MS = { from: null, to: null };
+function milkSummary() {
+  const t = today(), first = (m) => m + '-01', last = (m) => { const [y, mo] = m.split('-').map(Number); return `${m}-${pad(new Date(y, mo, 0).getDate())}`; };
+  const back = (n) => { const d = new Date(t + 'T00:00'); d.setDate(d.getDate() - n); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+  if (!MS.from) { MS.from = first(S.month); MS.to = S.month === t.slice(0, 7) ? t : last(S.month); }
+  const fromIn = h('input', { type: 'date', value: MS.from, max: t }), toIn = h('input', { type: 'date', value: MS.to, max: t });
+  const out = h('div');
+  let rows = [];
+  const show = guard(async () => {
+    if (!fromIn.value || !toIn.value) return;
+    MS.from = fromIn.value; MS.to = toIn.value;
+    out.innerHTML = ''; out.append(h('p', { class: 'tag' }, 'Loading…'));
+    rows = await api(`milk-summary?from=${MS.from}&to=${MS.to}`);
+    const sum = (k) => Math.round(rows.reduce((a, r) => a + r[k], 0) * 100) / 100, left = sum('left');
+    const stat = (l, val, c) => h('div', {}, h('div', { class: 'l' }, l), h('div', { class: 'v ' + (c || '') }, val));
+    out.innerHTML = '';
+    out.append(h('div', { class: 'tm-row' }, stat('Total milk yield', lit(sum('yield')) + ' L'), stat('Total sold', lit(sum('sold')) + ' L'),
+      stat(left >= 0 ? 'Left over' : 'Short', lit(Math.abs(left)) + ' L', left >= 0 ? 'good' : 'bad'), stat('Days', rows.length)),
+      h('details', { class: 'ms-days' }, h('summary', {}, 'Show each day'), table([{ label: 'Date', render: (r) => dayLabel(r.date) }, { label: 'Yield L', num: 1, render: (r) => lit(r.yield) }, { label: 'Sold L', num: 1, render: (r) => lit(r.sold) },
+        { label: 'Left / short', num: 1, render: (r) => h('span', { class: r.left < 0 ? 'bad' : '' }, (r.left < 0 ? '−' : '') + lit(Math.abs(r.left))) }], rows,
+      { foot: ['Total', lit(sum('yield')), lit(sum('sold')), (left < 0 ? '−' : '') + lit(Math.abs(left))] })));
+  });
+  const preset = (a, b) => () => { fromIn.value = a; toIn.value = b; show(); };
+  const lm = shiftMonth(t.slice(0, 7), -1);
+  const download = guard(async () => {
+    if (!rows.length) return toast('Nothing to download', true);
+    const sheet = rows.map((r) => ({ Date: r.date, 'Yield AM (L)': r.yield_am, 'Yield PM (L)': r.yield_pm, 'Total yield (L)': r.yield, 'Sold AM (L)': r.sold_am, 'Sold PM (L)': r.sold_pm, 'Total sold (L)': r.sold, 'Left over / short (L)': r.left }));
+    const tot = (k) => Math.round(sheet.reduce((a, r) => a + r[k], 0) * 100) / 100;
+    sheet.push(Object.fromEntries(Object.keys(sheet[0]).map((k) => [k, k === 'Date' ? 'Total' : tot(k)])));
+    const blob = new Blob([makeXlsx({ 'Milk summary': sheet })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const a = h('a', { href: URL.createObjectURL(blob), download: `GRV-Milk-${MS.from}-to-${MS.to}.xlsx` });
+    document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast('Excel file downloaded');
+  });
+  const card = h('div', { class: 'card todaymilk' }, h('h2', { style: 'margin-top:0' }, 'Milk summary — yield vs sold'),
+    h('div', { class: 'bar' }, h('label', { class: 'ms-l' }, 'From ', fromIn), h('label', { class: 'ms-l' }, 'To ', toIn), h('button', { class: 'pri', onclick: show }, 'Show'), h('button', { onclick: download }, '⬇ Download Excel')),
+    h('div', { class: 'bar' }, h('button', { class: 'link', onclick: preset(first(t.slice(0, 7)), t) }, 'This month'), h('button', { class: 'link', onclick: preset(first(lm), last(lm)) }, 'Last month'),
+      h('button', { class: 'link', onclick: preset(back(6), t) }, 'Last 7 days'), h('button', { class: 'link', onclick: preset(t, t) }, 'Today')), out);
+  show();
+  return card;
+}
 
 // One cow reminder: confirmation due, or a 3-monthly pregnancy check-in. "Done" hides a check-in until the next 3-month mark.
 function aiAlert(a, after) {
@@ -154,19 +224,23 @@ async function routeView(v) {
     ? h('div', { class: 'seg' }, [[S.user.today, 'Today'], [S.user.yesterday, 'Yesterday']].map(([d, l]) => h('button', { class: R.date === d ? 'on' : '', onclick: () => { R.date = d; rerender(); } }, l)))
     : h('input', { type: 'date', value: R.date, onchange: (e) => { if (e.target.value) { R.date = e.target.value; rerender(); } } });
   v.append(h('h1', {}, 'Deliveries'), h('p', { class: 'sub' }, `${dayLabel(R.date)} · ${R.session === 'AM' ? 'Morning' : 'Evening'}. Customers get their usual quantity unless you change it.`),
+    staff ? null : h('div', { class: 'bar' }, viewTabs(() => { v.innerHTML = ''; pages.delivery(v); })),
     h('div', { class: 'bar sticky' }, dateCtl, sessionSeg, search), h('div', { class: 'bar' }, prog), cardsBox);
   if (R.filter) for (const c of cardsBox.children) c.hidden = !c.dataset.name.includes(R.filter);
   if (!items.length) cardsBox.append(h('p', { class: 'mute' }, 'No customers for this session.'));
   stats();
 }
 
+// Cards / Table / Month grid switch for admin, shown on every delivery view.
+const viewTabs = (reRender) => h('div', { class: 'seg' }, ['cards', 'day', 'month'].map((k) => h('button', { class: D.view === k ? 'on' : '', onclick: () => { D.view = k; reRender(); } }, { cards: 'Cards', day: 'Table', month: 'Month grid' }[k])));
+
 pages.delivery = async (v) => {
   if (S.user.role !== 'admin' || D.view === 'cards') return routeView(v);
   if (D.month !== S.month || !D.data) { D.data = await api('delivery?month=' + S.month); D.month = S.month; D.ov = new Map(D.data.entries.map((e) => [`${e.c}|${e.d}|${e.s}`, e.q])); D.skips = new Set(D.data.skips.map((e) => `${e.c}|${e.d}|${e.s}`)); }
   if (!D.date || !D.date.startsWith(S.month)) D.date = monthDefaultDate();
   const dayStr = (n) => `${S.month}-${pad(n)}`;
-  const defQ = (c, s) => (c.status === 'Active' ? (s === 'AM' ? c.am : c.pm) : 0);
-  const baseQ = (c, date, s) => (D.skips.has(`${c.id}|${date}|${s}`) ? 0 : defQ(c, s)); // customer "no milk" request = 0
+  const defQ = (c, s, date = D.date) => { const p = planOn(c, date); return p.status === 'Active' ? (s === 'AM' ? p.am : p.pm) : 0; };
+  const baseQ = (c, date, s) => (D.skips.has(`${c.id}|${date}|${s}`) ? 0 : defQ(c, s, date)); // customer "no milk" request = 0
   const save = guard(async (c, date, s, input) => {
     const raw = input.value.trim(); const k = `${c.id}|${date}|${s}`;
     if (raw !== '' && !(Number(raw) >= 0)) { toast('Enter a number ≥ 0', true); input.value = D.ov.has(k) ? D.ov.get(k) : ''; return; }
@@ -190,7 +264,7 @@ pages.delivery = async (v) => {
   const match = (c) => !D.filter || (c.name + c.id).toLowerCase().includes(D.filter.toLowerCase());
   const reRender = () => { v.innerHTML = ''; pages.delivery(v); };
 
-  const tabs = h('div', { class: 'seg' }, ['cards', 'day', 'month'].map((k) => h('button', { class: D.view === k ? 'on' : '', onclick: () => { D.view = k; reRender(); } }, { cards: 'Cards', day: 'Table', month: 'Month grid' }[k])));
+  const tabs = viewTabs(reRender);
   const search = h('input', { type: 'search', placeholder: 'Search customer…', value: D.filter, oninput: (e) => { D.filter = e.target.value; clearTimeout(search._t); search._t = setTimeout(() => { reRender(); const s = $('input[type=search]'); s.focus(); s.setSelectionRange(99, 99); }, 200); } });
   totalEl = h('b', {});
   const bar = h('div', { class: 'bar' }, tabs);
@@ -202,10 +276,10 @@ pages.delivery = async (v) => {
     bar.append(h('button', { onclick: step(-1) }, '◀'), dateIn, h('button', { onclick: step(1) }, '▶'), h('span', { class: 'tag' }, dayLabel(D.date)), search, h('span', { class: 'grow' }), totalEl,
       h('button', { onclick: guard(async () => { if (!confirm(`Reset all entries on ${D.date} back to defaults?`)) return; await api('delivery/reset-day', 'POST', { date: D.date }); D.data = null; reRender(); }) }, 'Reset day'));
     const rows = D.data.customers.filter(match);
-    body = h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['ID', 'Customer', 'AM default', 'AM actual', 'PM default', 'PM actual', 'Litres', 'Amount', ''].map((t, i) => h('th', { class: i > 1 && i < 8 ? 'n' : '' }, t)))),
+    body = h('div', { class: 'tablewrap' }, h('table', { class: 'freeze2' }, h('thead', {}, h('tr', {}, ['ID', 'Customer', 'AM default', 'AM actual', 'PM default', 'PM actual', 'Litres', 'Amount', ''].map((t, i) => h('th', { class: i > 1 && i < 8 ? 'n' : '' }, t)))),
       h('tbody', {}, rows.map((c) => {
         const tl = h('td', { class: 'n' }), am = h('td', { class: 'n' });
-        const upd = () => { const t = eff(c, D.date, 'AM') + eff(c, D.date, 'PM'); tl.textContent = lit(t); am.textContent = inr(t * c.price); };
+        const upd = () => { const t = eff(c, D.date, 'AM') + eff(c, D.date, 'PM'); tl.textContent = lit(t); am.textContent = inr(t * planOn(c, D.date).price); };
         const a = qInput(c, D.date, 'AM'), p = qInput(c, D.date, 'PM');
         a.addEventListener('change', upd); p.addEventListener('change', upd); upd();
         // Absent toggle: marks every session this customer normally takes as 0; click again to undo.
@@ -221,18 +295,18 @@ pages.delivery = async (v) => {
         });
         if (!sess.length) btn.disabled = true;
         a.addEventListener('change', label); p.addEventListener('change', label); label();
-        return h('tr', {}, h('td', {}, c.id), h('td', {}, c.name, c.status === 'Inactive' ? h('span', { class: 'tag' }, ' (inactive)') : ''), h('td', { class: 'n mute' }, lit(defQ(c, 'AM'))), h('td', { class: 'n' }, a), h('td', { class: 'n mute' }, lit(defQ(c, 'PM'))), h('td', { class: 'n' }, p), tl, am, h('td', {}, btn));
+        return h('tr', {}, h('td', {}, c.id), h('td', {}, nameCell(c.name, c.id, c.status === 'Inactive' ? h('span', { class: 'tag' }, ' (inactive)') : '')), h('td', { class: 'n mute' }, lit(defQ(c, 'AM'))), h('td', { class: 'n' }, a), h('td', { class: 'n mute' }, lit(defQ(c, 'PM'))), h('td', { class: 'n' }, p), tl, am, h('td', {}, btn));
       }))));
   } else {
     bar.append(h('div', { class: 'seg' }, ['AM', 'PM'].map((s) => h('button', { class: D.session === s ? 'on' : '', onclick: () => { D.session = s; reRender(); } }, s))), search, h('span', { class: 'grow' }), totalEl);
     const days = Array.from({ length: D.data.days }, (_, i) => i + 1);
     const rows = D.data.customers.filter(match);
-    body = h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Customer'), h('th', { class: 'n' }, 'Default'), days.map((n) => h('th', { class: 'n' }, n)), h('th', { class: 'n' }, 'Total'))),
+    body = h('div', { class: 'tablewrap' }, h('table', { class: 'freeze1' }, h('thead', {}, h('tr', {}, h('th', {}, 'Customer'), h('th', { class: 'n' }, 'Default'), days.map((n) => h('th', { class: 'n' }, n)), h('th', { class: 'n' }, 'Total'))),
       h('tbody', {}, rows.map((c) => {
         const tot = h('td', { class: 'n' });
         const upd = () => { let t = 0; for (const n of days) t += eff(c, dayStr(n), D.session); tot.textContent = lit(t); };
         upd();
-        return h('tr', {}, h('td', {}, c.name), h('td', { class: 'n mute' }, lit(defQ(c, D.session))),
+        return h('tr', {}, h('td', {}, nameCell(c.name, c.id)), h('td', { class: 'n mute' }, lit(defQ(c, D.session, dayStr(D.data.days)))),
           days.map((n) => { const i = qInput(c, dayStr(n), D.session); i.addEventListener('change', upd); return h('td', { class: 'gridcell' }, i); }), tot);
       }))));
   }
@@ -249,11 +323,11 @@ pages.bills = async (v) => {
     holder.innerHTML = '';
     const rs = rows.filter((r) => !filter || (r.name + r.id).toLowerCase().includes(filter.toLowerCase()));
     holder.append(table([
-      { label: 'ID', key: 'id' }, { label: 'Customer', render: (r) => h('span', {}, r.name, r.bill_name ? h('div', { class: 'tag' }, 'Bill name: ' + r.bill_name) : null) }, { label: 'Phone', key: 'phone' }, { label: 'AM L', num: 1, render: (r) => lit(r.am) }, { label: 'PM L', num: 1, render: (r) => lit(r.pm) },
+      { label: 'ID', key: 'id' }, { label: 'Customer', render: (r) => nameCell(r.name, r.id, r.bill_name ? h('div', { class: 'tag' }, 'Bill name: ' + r.bill_name) : null) }, { label: 'Phone', key: 'phone' }, { label: 'AM L', num: 1, render: (r) => lit(r.am) }, { label: 'PM L', num: 1, render: (r) => lit(r.pm) },
       { label: 'Total L', num: 1, render: (r) => lit(r.total) }, { label: 'Price/L', num: 1, render: (r) => lit(r.price) }, { label: 'Milk', num: 1, render: (r) => inr(r.milk_amount) }, { label: 'Extras', num: 1, render: (r) => (r.extras_amount ? inr(r.extras_amount) : '–') }, { label: 'Bill', num: 1, render: (r) => inr(r.amount) },
       { label: 'Paid', num: 1, render: (r) => inr(r.paid) }, { label: 'Pending', num: 1, render: (r) => h('span', { class: r.pending > 0 ? 'bad' : '' }, inr(r.pending)) }, { label: 'Status', render: (r) => pill(r.pay_status) },
       { label: '', render: (r) => h('span', {}, h('a', { href: `#/bill/${r.id}` }, h('button', { class: 'link' }, 'Bill')), h('button', { class: 'link', onclick: () => payFor(r) }, 'Payment')) },
-    ], rs, { foot: ['', 'Total', '', lit(sum('am')), lit(sum('pm')), lit(sum('total')), '', inr(sum('milk_amount')), inr(sum('extras_amount')), inr(sum('amount')), inr(sum('paid')), inr(sum('pending')), '', ''] }));
+    ], rs, { cls: 'freeze2', foot: ['', 'Total', '', lit(sum('am')), lit(sum('pm')), lit(sum('total')), '', inr(sum('milk_amount')), inr(sum('extras_amount')), inr(sum('amount')), inr(sum('paid')), inr(sum('pending')), '', ''] }));
   };
   // Payment dialog: shows what the customer bought and owes; the amount is pre-filled with the pending balance but can be changed.
   const payFor = guard(async (r) => {
@@ -315,35 +389,65 @@ const loadCustomers = async () => (customersCache = await api('customers'));
 const custName = (id) => (customersCache.find((c) => c.id === id) || {}).name || id;
 
 
-function crud({ title, sub, resource, cols, fields, monthly = true, total, master, idKey = 'id', extraBar, rowExtra }) {
+function crud({ title, sub, resource, cols, fields, monthly = true, total, master, idKey = 'id', extraBar, rowExtra, pick, cls }) {
   return async (v) => {
     S.lists = await api('lists'); await loadCustomers();
     const load = () => api(resource + (monthly ? '?month=' + S.month : ''));
-    let rows = await load(), filter = '';
+    let rows = await load(), filter = '', picked = '';
     const holder = h('div');
     const F = typeof fields === 'function' ? fields : () => fields;
     const edit = (r) => openForm({ title: (r ? 'Edit ' : 'Add ') + title, fields: F(), values: r || {}, onSave: async (d) => { await api(r ? `${resource}/${r[idKey]}` : resource, r ? 'PUT' : 'POST', d); toast('Saved'); render(); } });
     const draw = () => {
       holder.innerHTML = '';
-      const rs = rows.filter((r) => !filter || JSON.stringify(Object.values(r)).toLowerCase().includes(filter.toLowerCase()) || (r.customer_id && custName(r.customer_id).toLowerCase().includes(filter.toLowerCase())));
+      const rs = rows.filter((r) => !picked || r[pick.key] === picked).filter((r) => !filter || JSON.stringify(Object.values(r)).toLowerCase().includes(filter.toLowerCase()) || (r.customer_id && custName(r.customer_id).toLowerCase().includes(filter.toLowerCase())));
       const c = [...cols, { label: '', render: (r) => h('span', {}, rowExtra ? rowExtra(r) : null, actions(() => edit(r), guard(async () => { if (!confirmDel(master ? r.name : 'this entry')) return; await api(`${resource}/${r[idKey]}`, 'DELETE'); toast('Deleted'); render(); }))) }];
-      holder.append(table(c, rs, total ? { foot: total(rs, c.length) } : undefined));
+      holder.append(table(c, rs, { cls, foot: total ? total(rs, c.length) : undefined }));
     };
     v.append(h('h1', {}, /s$|Income|Yield/.test(title) ? (title === 'Income' ? 'Income' : title) : title + 's'), h('p', { class: 'sub' }, sub + (monthly ? ` Showing ${monthLabel(S.month)}.` : '')),
-      h('div', { class: 'bar' }, h('button', { class: 'pri', onclick: () => edit() }, '+ Add'), h('input', { type: 'search', placeholder: 'Search…', oninput: (e) => { filter = e.target.value; draw(); } }), h('span', { class: 'grow' }), extraBar ? extraBar() : null), holder);
+      h('div', { class: 'bar' }, h('button', { class: 'pri', onclick: () => edit() }, '+ Add'), h('input', { type: 'search', placeholder: 'Search…', oninput: (e) => { filter = e.target.value; draw(); } }),
+        pick ? h('select', { 'aria-label': pick.label, onchange: (e) => { picked = e.target.value; draw(); } }, h('option', { value: '' }, 'All ' + pick.label.toLowerCase()), pick.options.map((o) => h('option', { value: o }, o))) : null, h('span', { class: 'grow' }), extraBar ? extraBar() : null), holder);
     draw();
   };
 }
 const sumRow = (len, idx, val) => Array.from({ length: len }, (_, i) => (i === idx ? val : i === 0 ? 'Total' : ''));
 
-pages.customers = crud({ title: 'Customer', sub: 'Master list — AM/PM defaults and price used for daily delivery and billing.', resource: 'customers', monthly: false, master: true,
+pages.customers = crud({ title: 'Customer', sub: 'Master list — AM/PM defaults and price used for daily delivery and billing.', resource: 'customers', monthly: false, master: true, cls: 'freeze2',
   fields: () => [{ key: 'name', label: 'Nickname (only you see this)', required: true }, { key: 'bill_name', label: "Name on bill (the customer's own — they can also set it)" }, { key: 'phone', label: 'Phone' }, { key: 'am', label: 'AM default qty (L)', type: 'number', default: 0 }, { key: 'pm', label: 'PM default qty (L)', type: 'number', default: 0 },
-    { key: 'price', label: 'Price per L (₹)', type: 'number', default: 55 }, { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Inactive'] }],
-  cols: [{ label: 'ID', key: 'id' }, { label: 'Nickname', key: 'name' }, { label: 'Name on bill', render: (r) => r.bill_name || h('span', { class: 'mute' }, '—') }, { label: 'Phone', key: 'phone' }, { label: 'AM (L)', num: 1, render: (r) => lit(r.am) }, { label: 'PM (L)', num: 1, render: (r) => lit(r.pm) },
-    { label: 'Total (L)', num: 1, render: (r) => lit(r.am + r.pm) }, { label: 'Price/L', num: 1, render: (r) => inr(r.price) }, { label: 'Status', render: (r) => pill(r.status) }],
+    { key: 'price', label: 'Price per L (₹)', type: 'number', default: 55 }, { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Inactive'] },
+    { key: 'from_date', label: 'From date — new customer: the day milk starts. Edit: the day the new quantity / price / status starts (earlier days stay as they were). Leave empty to change every date, past ones too.', type: 'date', default: today() }],
+  cols: [{ label: 'ID', key: 'id' }, { label: 'Nickname', render: (r) => nameCell(r.name, r.id) }, { label: 'Name on bill', render: (r) => r.bill_name || h('span', { class: 'mute' }, '—') }, { label: 'Phone', key: 'phone' }, { label: 'AM (L)', num: 1, render: (r) => lit(r.am) }, { label: 'PM (L)', num: 1, render: (r) => lit(r.pm) },
+    { label: 'Total (L)', num: 1, render: (r) => lit(r.am + r.pm) }, { label: 'Price/L', num: 1, render: (r) => inr(r.price) }, { label: 'Status', render: (r) => pill(r.status) },
+    { label: 'From', render: (r) => { // when the current quantity started, and any change dated later
+      const t = today(), cur = (r.plans || []).filter((p) => p.from_date <= t && p.from_date > '0000-01-01').pop(), next = (r.plans || []).filter((p) => p.from_date > t);
+      return h('span', {}, cur ? dayLabel(cur.from_date) : h('span', { class: 'mute' }, '—'),
+        next.map((p) => h('div', { class: 'tag' }, `From ${dayLabel(p.from_date)}: ${p.status === 'Active' ? `AM ${lit(p.am)} · PM ${lit(p.pm)} · ${inr(p.price)}` : 'Inactive'}`)));
+    } }],
   total: (rs, n) => sumRow(n, 6, lit(rs.reduce((a, r) => a + r.am + r.pm, 0))),
-  rowExtra: (r) => h('button', { class: 'link', onclick: () => customerLogin(r) }, 'Login'),
+  rowExtra: (r) => h('span', {}, h('button', { class: 'link', onclick: () => customerHistory(r) }, 'History'), h('button', { class: 'link', onclick: () => customerLogin(r) }, 'Login')),
 });
+
+// A customer's quantity / price changes, oldest first, with Delete to undo a wrong one.
+async function customerHistory(c) {
+  const dlg = $('#dlg');
+  const draw = async () => {
+    const plans = ((await api('customers')).find((x) => x.id === c.id) || {}).plans || [];
+    const t = today(), cur = plans.filter((p) => p.from_date <= t).pop();
+    const what = (p) => (p.status === 'Active' ? `AM ${lit(p.am)} L · PM ${lit(p.pm)} L · ${inr(p.price)}/L` : 'Inactive (no milk)');
+    const when = (p) => (p.from_date === '0000-01-01' ? 'From the start' : 'From ' + new Date(p.from_date + 'T00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }));
+    dlg.innerHTML = '';
+    dlg.append(h('div', { class: 'form' }, h('h1', {}, `History — ${c.name}`),
+      plans.length ? h('p', { class: 'tag' }, 'Each line applies from its date until the next one. Delete a wrong change and the one before it carries on.')
+        : h('p', { class: 'mute' }, `No dated changes yet. ${what(c)} applies to every date. Use Edit with a From date to record a change.`),
+      plans.length ? table([{ label: 'When', render: (p) => h('b', {}, when(p)) }, { label: 'Quantity & price', render: what },
+        { label: '', render: (p) => p === cur ? pill('Now') : p.from_date > t ? pill('Upcoming') : '' },
+        { label: '', render: (p) => (p.from_date === '0000-01-01' ? '' : h('button', { type: 'button', class: 'link del', onclick: guard(async () => {
+          if (!confirm(`Delete the change ${when(p).toLowerCase()}? Bills from that date will use the quantity before it.`)) return;
+          await api(`customers/${encodeURIComponent(c.id)}/plans/${p.from_date}`, 'DELETE'); toast('Change deleted'); await draw();
+        }) }, 'Delete')) }], plans) : null,
+      h('div', { class: 'acts' }, h('button', { type: 'button', onclick: () => { dlg.close(); render(); } }, 'Close'))));
+  };
+  await draw(); dlg.showModal();
+}
 
 pages.income = crud({ title: 'Income', sub: 'Non-bill income such as curd, ghee or egg sales.', resource: 'income',
   fields: () => [{ key: 'date', label: 'Date', type: 'date', default: monthDefaultDate(), required: true }, { key: 'type', label: 'Income type', type: 'select', options: S.lists.income_types }, { key: 'source', label: 'Customer / source' },
@@ -358,10 +462,10 @@ pages.expenses = crud({ title: 'Expense', sub: 'Feed, medicine, labour and other
   total: (rs, n) => sumRow(n, 3, inr(rs.reduce((a, r) => a + r.amount, 0))) });
 
 const cowCalving = new Map(); // cow id -> expected calving date, from the newest pregnant AI record
-const cowsPage = crud({ title: 'Cow', sub: 'Cow master list.', resource: 'cows', monthly: false, master: true,
+const cowsPage = crud({ title: 'Cow', sub: 'Cow master list.', resource: 'cows', monthly: false, master: true, cls: 'freeze2', pick: { key: 'lactation', label: 'Lactation', options: ['Lactating', 'Dry', 'Heifer', 'Calf'] },
   fields: () => [{ key: 'name', label: 'Name / number', required: true }, { key: 'breed', label: 'Breed' }, { key: 'lactation', label: 'Lactation status', type: 'select', options: ['', 'Lactating', 'Dry', 'Heifer', 'Calf'] },
     { key: 'calving_date', label: 'Calving date', type: 'date' }, { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Sold', 'Deceased'] }, { key: 'notes', label: 'Notes', type: 'textarea' }],
-  cols: [{ label: 'ID', key: 'id' }, { label: 'Name', key: 'name' }, { label: 'Breed', key: 'breed' }, { label: 'Lactation', key: 'lactation' }, { label: 'Last calving', key: 'calving_date' }, { label: 'Expected calving', render: (r) => (cowCalving.has(r.id) ? h('b', {}, dayLabel(cowCalving.get(r.id))) : h('span', { class: 'mute' }, '–')) }, { label: 'Status', key: 'status' }, { label: 'Notes', key: 'notes' }],
+  cols: [{ label: 'ID', key: 'id' }, { label: 'Name', render: (r) => nameCell(r.name, r.id) }, { label: 'Breed', key: 'breed' }, { label: 'Lactation', key: 'lactation' }, { label: 'Last calving', key: 'calving_date' }, { label: 'Expected calving', render: (r) => (cowCalving.has(r.id) ? h('b', {}, dayLabel(cowCalving.get(r.id))) : h('span', { class: 'mute' }, '–')) }, { label: 'Status', key: 'status' }, { label: 'Notes', key: 'notes' }],
   rowExtra: (r) => h('button', { class: 'link', onclick: () => aiDialog(r) }, 'AI') });
 pages.cows = async (v) => {
   cowCalving.clear();
@@ -403,9 +507,9 @@ pages.yield = async (v) => {
   const [yy, mm] = S.month.split('-').map(Number), n = new Date(yy, mm, 0).getDate();
   const dayStr = (d) => `${S.month}-${pad(d)}`;
   const data = new Map(rows.map((r) => [`${r.cow_id}|${r.date}`, { am: r.am, pm: r.pm }]));
-  const shown = cows.filter((c) => c.status === 'Active' || rows.some((r) => r.cow_id === c.id));
-  v.append(h('h1', {}, 'Cow Yield'), h('p', { class: 'sub' }, `${monthLabel(S.month)} — litres per cow per day (AM on top, PM below). Leave a cell empty if there was no milking.`));
-  if (!shown.length) return v.append(h('p', { class: 'mute' }, 'No cows yet. '), h('a', { href: '#/cows' }, h('button', { class: 'pri' }, 'Add cows')));
+  const shown = cows.filter((c) => c.status === 'Active' && c.lactation === 'Lactating'); // dry cows, heifers and calves give no milk
+  v.append(h('h1', {}, 'Cow Yield'), h('p', { class: 'sub' }, `${monthLabel(S.month)} — litres per lactating cow per day (AM on top, PM below). Leave a cell empty if there was no milking. Dry cows are hidden.`));
+  if (!shown.length) return v.append(h('p', { class: 'mute' }, cows.length ? 'No lactating cows. Set a cow’s lactation status to Lactating on the Cows page.' : 'No cows yet. '), h('a', { href: '#/cows' }, h('button', { class: 'pri' }, cows.length ? 'Manage cows' : 'Add cows')));
   v.append(h('div', { class: 'bar' }, h('a', { href: '#/cows' }, h('button', {}, 'Manage cows')), h('span', { class: 'grow' })));
 
   const num = (x) => Number(x) || 0;
@@ -454,6 +558,7 @@ pages.yield = async (v) => {
 pages.daily = async (v) => {
   const rows = await api('daily?month=' + S.month);
   v.append(h('h1', {}, 'Daily Summary'), h('p', { class: 'sub' }, `${monthLabel(S.month)} — litres, deliveries and estimated sales per day.`),
+    milkSummary(), h('h2', {}, `Deliveries — ${monthLabel(S.month)}`),
     table([{ label: 'Date', render: (r) => dayLabel(r.date) }, { label: 'AM L', num: 1, render: (r) => lit(r.am) }, { label: 'PM L', num: 1, render: (r) => lit(r.pm) }, { label: 'Total L', num: 1, render: (r) => lit(r.total) },
       { label: 'Deliveries', num: 1, key: 'served' }, { label: 'Absent entries', num: 1, key: 'absent' }, { label: 'Est. sales', num: 1, render: (r) => inr(r.sales) }], rows,
       { foot: ['Total', lit(rows.reduce((a, r) => a + r.am, 0)), lit(rows.reduce((a, r) => a + r.pm, 0)), lit(rows.reduce((a, r) => a + r.total, 0)), '', rows.reduce((a, r) => a + r.absent, 0), inr(rows.reduce((a, r) => a + r.sales, 0))] }));
@@ -630,6 +735,20 @@ pages.notices = async (v) => {
 
 // ---------- customer portal ----------
 const P = { month: null, tab: 'bill' };
+// UPI pay: the button opens GPay/PhonePe/Paytm with our UPI ID and the amount filled in. On a big screen (computer) a QR code is added to scan with the phone.
+const UPI = { pa: 'rajeshrajive130@okhdfcbank', pn: 'GRV Dairy' };
+const upiLink = (amt, note) => `upi://pay?pa=${UPI.pa}&pn=${encodeURIComponent(UPI.pn)}&am=${Number(amt).toFixed(2)}&cu=INR&tn=${encodeURIComponent(note)}`;
+function payBox(amt, note) {
+  const link = upiLink(amt, note);
+  const box = h('div', { class: 'pay' }, h('a', { class: 'paybtn', href: link }, `Pay ${inr(amt)} with GPay / UPI`), h('div', { class: 'payid' }, `Opens GPay, PhonePe or Paytm — to ${UPI.pa}`));
+  if (!matchMedia('(min-width: 900px) and (pointer: fine)').matches) return box;
+  const qr = h('div', { class: 'payqr' }, 'Loading QR…');
+  const draw = () => { const q = qrcode(0, 'M'); q.addData(link); q.make(); qr.innerHTML = q.createSvgTag({ cellSize: 4, margin: 2 }); };
+  if (window.qrcode) draw();
+  else document.head.append(h('script', { src: 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js', onload: draw, onerror: () => qr.remove() }));
+  box.append(h('div', { class: 'payscan' }, qr, h('div', { class: 'payid' }, h('b', {}, 'On a computer?'), h('br'), 'Scan this with your phone to pay')));
+  return box;
+}
 pages.portal = async (v) => {
   const d = await api('portal' + (P.month ? '?month=' + P.month : ''));
   P.month = d.month;
@@ -651,7 +770,7 @@ pages.portal = async (v) => {
       h('p', { class: 'tag' }, upTo ? `Updated up to ${dayLabel(upTo)}. Each day is added at ${d.update_hour > 12 ? d.update_hour - 12 : d.update_hour} ${d.update_hour >= 12 ? 'PM' : 'AM'}.` : `Not updated yet — each day is added at ${d.update_hour > 12 ? d.update_hour - 12 : d.update_hour} ${d.update_hour >= 12 ? 'PM' : 'AM'}.`),
       h('div', { class: 'hero' }, h('div', { class: 'l' }, d.due > 0 ? 'Amount due' : 'All settled'), h('div', { class: 'big' }, inr(Math.max(d.due, 0))),
         h('div', { class: 'row' }, h('div', {}, 'Milk so far', h('b', {}, lit(d.total) + ' L')), h('div', {}, 'Bill so far', h('b', {}, inr(d.amount))), h('div', {}, 'You paid', h('b', {}, inr(d.paid))), h('div', {}, 'Pending', h('b', {}, inr(Math.max(d.due, 0))))),
-        null),
+        d.due > 0 ? payBox(d.due, `Milk bill ${d.customer.id} ${monthLabel(d.month)}`) : null),
       d.paid > 0 ? h('div', { class: 'thanks' }, h('div', { class: 'tick' }, '✓'), h('div', {}, h('b', {}, d.due > 0 ? 'Thank you for your payment!' : 'Thank you! Your bill is paid in full.'),
         h('div', { class: 'tag' }, d.due > 0 ? `We received ${inr(d.paid)}. ${inr(d.due)} is still pending.` : `We received ${inr(d.paid)}. Nothing is pending.`))) : null,
       monthCalendar(d),
