@@ -84,8 +84,8 @@ function openForm({ title, fields, values = {}, onSave, intro, saveLabel = 'Save
 }
 
 // ---------- generic table ----------
-function table(cols, rows, { foot } = {}) {
-  return h('div', { class: 'tablewrap' }, h('table', {},
+function table(cols, rows, { foot, cls } = {}) {
+  return h('div', { class: 'tablewrap' }, h('table', { class: cls },
     h('thead', {}, h('tr', {}, cols.map((c) => h('th', { class: c.num ? 'n' : '' }, c.label)))),
     h('tbody', {}, rows.map((r) => h('tr', {}, cols.map((c) => h('td', { class: c.num ? 'n' : '' }, c.render ? c.render(r) : r[c.key] ?? ''))))),
     foot ? h('tfoot', {}, h('tr', {}, cols.map((c, i) => h('td', { class: c.num ? 'n' : '' }, foot[i] ?? '')))) : null));
@@ -107,11 +107,22 @@ pages.dashboard = async (v) => {
       [['Active Customers', `${d.active} / ${d.customers}`], ['Milk Sold', lit(d.litres) + ' L'], ['Total Sales', inr(d.sales)], ['Payments Collected', inr(d.collected)],
         ['Pending Amount', inr(d.pending), d.pending > 0 ? 'warn' : ''], ['Other Income', inr(d.other_income)], ['Expenses', inr(d.expenses)], ['Net Profit', inr(d.net), d.net >= 0 ? 'good' : 'bad'],
         ['Cow Yield', lit(d.yield_litres) + ' L']].map(([l, val, c]) => h('div', { class: 'card' }, h('div', { class: 'l' }, l), h('div', { class: 'v ' + (c || '') }, val)))),
+    todayCard(d.today),
     h('div', { class: 'grid2' },
       h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Litres per day'), h('div', { class: 'spark' }, d.daily.map((x) => h('div', { style: `height:${(x.total / max) * 100}%`, title: `${dayLabel(x.date)}: ${lit(x.total)} L` })))),
       h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Highest pending'),
         d.top_pending.length ? h('div', { class: 'bars' }, d.top_pending.map((p) => h('div', { class: 'row' }, h('span', { class: 'name' }, p.name), h('span', { class: 'bar-fill', style: `width:${(p.pending / d.top_pending[0].pending) * 160}px` }), inr(p.pending)))) : h('p', { class: 'mute' }, 'Nothing pending 🎉'))));
 };
+
+// Today's milk: what the cows gave vs what went to customers, and what is left over (or short).
+function todayCard(t) {
+  const diff = Math.round((t.yield - t.sold) * 100) / 100;
+  const stat = (l, val, c) => h('div', {}, h('div', { class: 'l' }, l), h('div', { class: 'v ' + (c || '') }, val));
+  return h('div', { class: 'card todaymilk' }, h('h2', { style: 'margin-top:0' }, `Today's milk — ${dayLabel(t.date)}`),
+    h('div', { class: 'tm-row' }, stat('Total milk yield', lit(t.yield) + ' L'), stat('Total sold', lit(t.sold) + ' L'),
+      stat(diff >= 0 ? 'Left over' : 'Short', lit(Math.abs(diff)) + ' L', diff >= 0 ? 'good' : 'bad')),
+    !t.yield ? h('p', { class: 'tag' }, 'No cow yield entered for today yet.') : null);
+}
 
 // One cow reminder: confirmation due, or a 3-monthly pregnancy check-in. "Done" hides a check-in until the next 3-month mark.
 function aiAlert(a, after) {
@@ -329,28 +340,29 @@ const loadCustomers = async () => (customersCache = await api('customers'));
 const custName = (id) => (customersCache.find((c) => c.id === id) || {}).name || id;
 
 
-function crud({ title, sub, resource, cols, fields, monthly = true, total, master, idKey = 'id', extraBar, rowExtra }) {
+function crud({ title, sub, resource, cols, fields, monthly = true, total, master, idKey = 'id', extraBar, rowExtra, pick, cls }) {
   return async (v) => {
     S.lists = await api('lists'); await loadCustomers();
     const load = () => api(resource + (monthly ? '?month=' + S.month : ''));
-    let rows = await load(), filter = '';
+    let rows = await load(), filter = '', picked = '';
     const holder = h('div');
     const F = typeof fields === 'function' ? fields : () => fields;
     const edit = (r) => openForm({ title: (r ? 'Edit ' : 'Add ') + title, fields: F(), values: r || {}, onSave: async (d) => { await api(r ? `${resource}/${r[idKey]}` : resource, r ? 'PUT' : 'POST', d); toast('Saved'); render(); } });
     const draw = () => {
       holder.innerHTML = '';
-      const rs = rows.filter((r) => !filter || JSON.stringify(Object.values(r)).toLowerCase().includes(filter.toLowerCase()) || (r.customer_id && custName(r.customer_id).toLowerCase().includes(filter.toLowerCase())));
+      const rs = rows.filter((r) => !picked || r[pick.key] === picked).filter((r) => !filter || JSON.stringify(Object.values(r)).toLowerCase().includes(filter.toLowerCase()) || (r.customer_id && custName(r.customer_id).toLowerCase().includes(filter.toLowerCase())));
       const c = [...cols, { label: '', render: (r) => h('span', {}, rowExtra ? rowExtra(r) : null, actions(() => edit(r), guard(async () => { if (!confirmDel(master ? r.name : 'this entry')) return; await api(`${resource}/${r[idKey]}`, 'DELETE'); toast('Deleted'); render(); }))) }];
-      holder.append(table(c, rs, total ? { foot: total(rs, c.length) } : undefined));
+      holder.append(table(c, rs, { cls, foot: total ? total(rs, c.length) : undefined }));
     };
     v.append(h('h1', {}, /s$|Income|Yield/.test(title) ? (title === 'Income' ? 'Income' : title) : title + 's'), h('p', { class: 'sub' }, sub + (monthly ? ` Showing ${monthLabel(S.month)}.` : '')),
-      h('div', { class: 'bar' }, h('button', { class: 'pri', onclick: () => edit() }, '+ Add'), h('input', { type: 'search', placeholder: 'Search…', oninput: (e) => { filter = e.target.value; draw(); } }), h('span', { class: 'grow' }), extraBar ? extraBar() : null), holder);
+      h('div', { class: 'bar' }, h('button', { class: 'pri', onclick: () => edit() }, '+ Add'), h('input', { type: 'search', placeholder: 'Search…', oninput: (e) => { filter = e.target.value; draw(); } }),
+        pick ? h('select', { 'aria-label': pick.label, onchange: (e) => { picked = e.target.value; draw(); } }, h('option', { value: '' }, 'All ' + pick.label.toLowerCase()), pick.options.map((o) => h('option', { value: o }, o))) : null, h('span', { class: 'grow' }), extraBar ? extraBar() : null), holder);
     draw();
   };
 }
 const sumRow = (len, idx, val) => Array.from({ length: len }, (_, i) => (i === idx ? val : i === 0 ? 'Total' : ''));
 
-pages.customers = crud({ title: 'Customer', sub: 'Master list — AM/PM defaults and price used for daily delivery and billing.', resource: 'customers', monthly: false, master: true,
+pages.customers = crud({ title: 'Customer', sub: 'Master list — AM/PM defaults and price used for daily delivery and billing.', resource: 'customers', monthly: false, master: true, cls: 'freeze2',
   fields: () => [{ key: 'name', label: 'Nickname (only you see this)', required: true }, { key: 'bill_name', label: "Name on bill (the customer's own — they can also set it)" }, { key: 'phone', label: 'Phone' }, { key: 'am', label: 'AM default qty (L)', type: 'number', default: 0 }, { key: 'pm', label: 'PM default qty (L)', type: 'number', default: 0 },
     { key: 'price', label: 'Price per L (₹)', type: 'number', default: 55 }, { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Inactive'] },
     { key: 'from_date', label: 'From date — new customer: the day milk starts. Edit: the day the new quantity / price / status starts (earlier days stay as they were). Leave empty to change every date, past ones too.', type: 'date', default: today() }],
@@ -401,7 +413,7 @@ pages.expenses = crud({ title: 'Expense', sub: 'Feed, medicine, labour and other
   total: (rs, n) => sumRow(n, 3, inr(rs.reduce((a, r) => a + r.amount, 0))) });
 
 const cowCalving = new Map(); // cow id -> expected calving date, from the newest pregnant AI record
-const cowsPage = crud({ title: 'Cow', sub: 'Cow master list.', resource: 'cows', monthly: false, master: true,
+const cowsPage = crud({ title: 'Cow', sub: 'Cow master list.', resource: 'cows', monthly: false, master: true, pick: { key: 'lactation', label: 'Lactation', options: ['Lactating', 'Dry', 'Heifer', 'Calf'] },
   fields: () => [{ key: 'name', label: 'Name / number', required: true }, { key: 'breed', label: 'Breed' }, { key: 'lactation', label: 'Lactation status', type: 'select', options: ['', 'Lactating', 'Dry', 'Heifer', 'Calf'] },
     { key: 'calving_date', label: 'Calving date', type: 'date' }, { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Sold', 'Deceased'] }, { key: 'notes', label: 'Notes', type: 'textarea' }],
   cols: [{ label: 'ID', key: 'id' }, { label: 'Name', key: 'name' }, { label: 'Breed', key: 'breed' }, { label: 'Lactation', key: 'lactation' }, { label: 'Last calving', key: 'calving_date' }, { label: 'Expected calving', render: (r) => (cowCalving.has(r.id) ? h('b', {}, dayLabel(cowCalving.get(r.id))) : h('span', { class: 'mute' }, '–')) }, { label: 'Status', key: 'status' }, { label: 'Notes', key: 'notes' }],
@@ -446,9 +458,9 @@ pages.yield = async (v) => {
   const [yy, mm] = S.month.split('-').map(Number), n = new Date(yy, mm, 0).getDate();
   const dayStr = (d) => `${S.month}-${pad(d)}`;
   const data = new Map(rows.map((r) => [`${r.cow_id}|${r.date}`, { am: r.am, pm: r.pm }]));
-  const shown = cows.filter((c) => c.status === 'Active' || rows.some((r) => r.cow_id === c.id));
-  v.append(h('h1', {}, 'Cow Yield'), h('p', { class: 'sub' }, `${monthLabel(S.month)} — litres per cow per day (AM on top, PM below). Leave a cell empty if there was no milking.`));
-  if (!shown.length) return v.append(h('p', { class: 'mute' }, 'No cows yet. '), h('a', { href: '#/cows' }, h('button', { class: 'pri' }, 'Add cows')));
+  const shown = cows.filter((c) => c.status === 'Active' && c.lactation === 'Lactating'); // dry cows, heifers and calves give no milk
+  v.append(h('h1', {}, 'Cow Yield'), h('p', { class: 'sub' }, `${monthLabel(S.month)} — litres per lactating cow per day (AM on top, PM below). Leave a cell empty if there was no milking. Dry cows are hidden.`));
+  if (!shown.length) return v.append(h('p', { class: 'mute' }, cows.length ? 'No lactating cows. Set a cow’s lactation status to Lactating on the Cows page.' : 'No cows yet. '), h('a', { href: '#/cows' }, h('button', { class: 'pri' }, cows.length ? 'Manage cows' : 'Add cows')));
   v.append(h('div', { class: 'bar' }, h('a', { href: '#/cows' }, h('button', {}, 'Manage cows')), h('span', { class: 'grow' })));
 
   const num = (x) => Number(x) || 0;

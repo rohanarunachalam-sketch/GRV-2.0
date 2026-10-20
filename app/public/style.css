@@ -361,3 +361,15 @@ body.customer .bar .seg{width:100%}
 .cal-key .ok::before{background:#4fb36f}.cal-key .pause::before{background:#f2c230}.cal-key .out::before{background:#e5584a}
 .ygrid tfoot td{position:static}.ygrid tfoot td.stick{position:sticky}
 .pill.Booked{background:var(--warn-l);color:var(--warn)}.pill.Cancelled{background:var(--bad-l);color:var(--bad)}
+/* customers: ID and name stay put while the rest scrolls sideways */
+.freeze2 th:nth-child(-n+2),.freeze2 td:nth-child(-n+2){position:sticky;left:0;z-index:2;background:var(--card)}
+.freeze2 th:first-child,.freeze2 td:first-child{width:84px;min-width:84px;max-width:84px;box-sizing:border-box}
+.freeze2 th:nth-child(2),.freeze2 td:nth-child(2){left:84px;box-shadow:1px 0 0 var(--line)}
+.freeze2 th:nth-child(-n+2){z-index:3;background:#fafcfa}
+.freeze2 tfoot td:nth-child(-n+2){z-index:3;background:#fafcfa}
+/* dashboard: today's yield vs sold */
+.todaymilk{margin-bottom:18px}
+.todaymilk .tm-row{display:flex;flex-wrap:wrap;gap:12px 36px}
+.todaymilk .l{color:var(--mute);font-size:13px;font-weight:600}
+.todaymilk .v{font-size:24px;font-weight:750}
+.todaymilk .v.good{color:var(--good)}.todaymilk .v.bad{color:var(--bad)}

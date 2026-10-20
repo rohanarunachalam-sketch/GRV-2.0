@@ -194,6 +194,9 @@ async function dashboard(month) {
   const collected = (await get('SELECT COALESCE(SUM(amount),0) t FROM payments WHERE bill_month=?', [month])).t;
   const p = await pnl(month, b);
   const yieldL = (await get('SELECT COALESCE(SUM(am+pm),0) t FROM cow_yield WHERE date>=? AND date<=?', [dateStr(month, 1), monthEnd(month)])).t;
+  const t = today(), days = await daily(month);
+  const soldToday = (days.find((d) => d.date === t) || (await daily(t.slice(0, 7))).find((d) => d.date === t)).total; // today's month may differ from the one shown
+  const yieldToday = (await get('SELECT COALESCE(SUM(am+pm),0) t FROM cow_yield WHERE date=?', [t])).t;
   return {
     month, customers: (await get('SELECT COUNT(*) n FROM customers')).n,
     active: (await get("SELECT COUNT(*) n FROM customers WHERE status='Active'")).n,
@@ -201,7 +204,8 @@ async function dashboard(month) {
     pending: r2(b.reduce((a, x) => a + Math.max(x.pending, 0), 0)),
     other_income: p.other_income, expenses: p.expenses, net: p.net, yield_litres: r2(yieldL),
     top_pending: b.filter((x) => x.pending > 0).sort((a, c) => c.pending - a.pending).slice(0, 8),
-    daily: (await daily(month)).map((d) => ({ date: d.date, total: d.total })),
+    today: { date: t, yield: r2(yieldToday), sold: r2(soldToday) },
+    daily: days.map((d) => ({ date: d.date, total: d.total })),
   };
 }
 
