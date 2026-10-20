@@ -90,6 +90,8 @@ function table(cols, rows, { foot, cls } = {}) {
     h('tbody', {}, rows.map((r) => h('tr', {}, cols.map((c) => h('td', { class: c.num ? 'n' : '' }, c.render ? c.render(r) : r[c.key] ?? ''))))),
     foot ? h('tfoot', {}, h('tr', {}, cols.map((c, i) => h('td', { class: c.num ? 'n' : '' }, foot[i] ?? '')))) : null));
 }
+// Name cell for tables with frozen columns: on phones the ID column is hidden and the ID shows under the name instead.
+const nameCell = (name, id, ...extra) => h('span', {}, h('span', { class: 'nm' }, name), h('span', { class: 'idsub' }, id), extra);
 const pill = (s) => h('span', { class: 'pill ' + String(s).split(' ')[0] }, s);
 const actions = (edit, del) => h('span', {}, h('button', { class: 'link', onclick: edit }, 'Edit'), h('button', { class: 'link del', onclick: del }, 'Delete'));
 const confirmDel = (what) => confirm(`Delete ${what}? This cannot be undone.`);
@@ -179,11 +181,15 @@ async function routeView(v) {
     ? h('div', { class: 'seg' }, [[S.user.today, 'Today'], [S.user.yesterday, 'Yesterday']].map(([d, l]) => h('button', { class: R.date === d ? 'on' : '', onclick: () => { R.date = d; rerender(); } }, l)))
     : h('input', { type: 'date', value: R.date, onchange: (e) => { if (e.target.value) { R.date = e.target.value; rerender(); } } });
   v.append(h('h1', {}, 'Deliveries'), h('p', { class: 'sub' }, `${dayLabel(R.date)} · ${R.session === 'AM' ? 'Morning' : 'Evening'}. Customers get their usual quantity unless you change it.`),
+    staff ? null : h('div', { class: 'bar' }, viewTabs(() => { v.innerHTML = ''; pages.delivery(v); })),
     h('div', { class: 'bar sticky' }, dateCtl, sessionSeg, search), h('div', { class: 'bar' }, prog), cardsBox);
   if (R.filter) for (const c of cardsBox.children) c.hidden = !c.dataset.name.includes(R.filter);
   if (!items.length) cardsBox.append(h('p', { class: 'mute' }, 'No customers for this session.'));
   stats();
 }
+
+// Cards / Table / Month grid switch for admin, shown on every delivery view.
+const viewTabs = (reRender) => h('div', { class: 'seg' }, ['cards', 'day', 'month'].map((k) => h('button', { class: D.view === k ? 'on' : '', onclick: () => { D.view = k; reRender(); } }, { cards: 'Cards', day: 'Table', month: 'Month grid' }[k])));
 
 pages.delivery = async (v) => {
   if (S.user.role !== 'admin' || D.view === 'cards') return routeView(v);
@@ -215,7 +221,7 @@ pages.delivery = async (v) => {
   const match = (c) => !D.filter || (c.name + c.id).toLowerCase().includes(D.filter.toLowerCase());
   const reRender = () => { v.innerHTML = ''; pages.delivery(v); };
 
-  const tabs = h('div', { class: 'seg' }, ['cards', 'day', 'month'].map((k) => h('button', { class: D.view === k ? 'on' : '', onclick: () => { D.view = k; reRender(); } }, { cards: 'Cards', day: 'Table', month: 'Month grid' }[k])));
+  const tabs = viewTabs(reRender);
   const search = h('input', { type: 'search', placeholder: 'Search customer…', value: D.filter, oninput: (e) => { D.filter = e.target.value; clearTimeout(search._t); search._t = setTimeout(() => { reRender(); const s = $('input[type=search]'); s.focus(); s.setSelectionRange(99, 99); }, 200); } });
   totalEl = h('b', {});
   const bar = h('div', { class: 'bar' }, tabs);
@@ -227,7 +233,7 @@ pages.delivery = async (v) => {
     bar.append(h('button', { onclick: step(-1) }, '◀'), dateIn, h('button', { onclick: step(1) }, '▶'), h('span', { class: 'tag' }, dayLabel(D.date)), search, h('span', { class: 'grow' }), totalEl,
       h('button', { onclick: guard(async () => { if (!confirm(`Reset all entries on ${D.date} back to defaults?`)) return; await api('delivery/reset-day', 'POST', { date: D.date }); D.data = null; reRender(); }) }, 'Reset day'));
     const rows = D.data.customers.filter(match);
-    body = h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['ID', 'Customer', 'AM default', 'AM actual', 'PM default', 'PM actual', 'Litres', 'Amount', ''].map((t, i) => h('th', { class: i > 1 && i < 8 ? 'n' : '' }, t)))),
+    body = h('div', { class: 'tablewrap' }, h('table', { class: 'freeze2' }, h('thead', {}, h('tr', {}, ['ID', 'Customer', 'AM default', 'AM actual', 'PM default', 'PM actual', 'Litres', 'Amount', ''].map((t, i) => h('th', { class: i > 1 && i < 8 ? 'n' : '' }, t)))),
       h('tbody', {}, rows.map((c) => {
         const tl = h('td', { class: 'n' }), am = h('td', { class: 'n' });
         const upd = () => { const t = eff(c, D.date, 'AM') + eff(c, D.date, 'PM'); tl.textContent = lit(t); am.textContent = inr(t * planOn(c, D.date).price); };
@@ -246,18 +252,18 @@ pages.delivery = async (v) => {
         });
         if (!sess.length) btn.disabled = true;
         a.addEventListener('change', label); p.addEventListener('change', label); label();
-        return h('tr', {}, h('td', {}, c.id), h('td', {}, c.name, c.status === 'Inactive' ? h('span', { class: 'tag' }, ' (inactive)') : ''), h('td', { class: 'n mute' }, lit(defQ(c, 'AM'))), h('td', { class: 'n' }, a), h('td', { class: 'n mute' }, lit(defQ(c, 'PM'))), h('td', { class: 'n' }, p), tl, am, h('td', {}, btn));
+        return h('tr', {}, h('td', {}, c.id), h('td', {}, nameCell(c.name, c.id, c.status === 'Inactive' ? h('span', { class: 'tag' }, ' (inactive)') : '')), h('td', { class: 'n mute' }, lit(defQ(c, 'AM'))), h('td', { class: 'n' }, a), h('td', { class: 'n mute' }, lit(defQ(c, 'PM'))), h('td', { class: 'n' }, p), tl, am, h('td', {}, btn));
       }))));
   } else {
     bar.append(h('div', { class: 'seg' }, ['AM', 'PM'].map((s) => h('button', { class: D.session === s ? 'on' : '', onclick: () => { D.session = s; reRender(); } }, s))), search, h('span', { class: 'grow' }), totalEl);
     const days = Array.from({ length: D.data.days }, (_, i) => i + 1);
     const rows = D.data.customers.filter(match);
-    body = h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Customer'), h('th', { class: 'n' }, 'Default'), days.map((n) => h('th', { class: 'n' }, n)), h('th', { class: 'n' }, 'Total'))),
+    body = h('div', { class: 'tablewrap' }, h('table', { class: 'freeze1' }, h('thead', {}, h('tr', {}, h('th', {}, 'Customer'), h('th', { class: 'n' }, 'Default'), days.map((n) => h('th', { class: 'n' }, n)), h('th', { class: 'n' }, 'Total'))),
       h('tbody', {}, rows.map((c) => {
         const tot = h('td', { class: 'n' });
         const upd = () => { let t = 0; for (const n of days) t += eff(c, dayStr(n), D.session); tot.textContent = lit(t); };
         upd();
-        return h('tr', {}, h('td', {}, c.name), h('td', { class: 'n mute' }, lit(defQ(c, D.session, dayStr(D.data.days)))),
+        return h('tr', {}, h('td', {}, nameCell(c.name, c.id)), h('td', { class: 'n mute' }, lit(defQ(c, D.session, dayStr(D.data.days)))),
           days.map((n) => { const i = qInput(c, dayStr(n), D.session); i.addEventListener('change', upd); return h('td', { class: 'gridcell' }, i); }), tot);
       }))));
   }
@@ -274,11 +280,11 @@ pages.bills = async (v) => {
     holder.innerHTML = '';
     const rs = rows.filter((r) => !filter || (r.name + r.id).toLowerCase().includes(filter.toLowerCase()));
     holder.append(table([
-      { label: 'ID', key: 'id' }, { label: 'Customer', render: (r) => h('span', {}, r.name, r.bill_name ? h('div', { class: 'tag' }, 'Bill name: ' + r.bill_name) : null) }, { label: 'Phone', key: 'phone' }, { label: 'AM L', num: 1, render: (r) => lit(r.am) }, { label: 'PM L', num: 1, render: (r) => lit(r.pm) },
+      { label: 'ID', key: 'id' }, { label: 'Customer', render: (r) => nameCell(r.name, r.id, r.bill_name ? h('div', { class: 'tag' }, 'Bill name: ' + r.bill_name) : null) }, { label: 'Phone', key: 'phone' }, { label: 'AM L', num: 1, render: (r) => lit(r.am) }, { label: 'PM L', num: 1, render: (r) => lit(r.pm) },
       { label: 'Total L', num: 1, render: (r) => lit(r.total) }, { label: 'Price/L', num: 1, render: (r) => lit(r.price) }, { label: 'Milk', num: 1, render: (r) => inr(r.milk_amount) }, { label: 'Extras', num: 1, render: (r) => (r.extras_amount ? inr(r.extras_amount) : '–') }, { label: 'Bill', num: 1, render: (r) => inr(r.amount) },
       { label: 'Paid', num: 1, render: (r) => inr(r.paid) }, { label: 'Pending', num: 1, render: (r) => h('span', { class: r.pending > 0 ? 'bad' : '' }, inr(r.pending)) }, { label: 'Status', render: (r) => pill(r.pay_status) },
       { label: '', render: (r) => h('span', {}, h('a', { href: `#/bill/${r.id}` }, h('button', { class: 'link' }, 'Bill')), h('button', { class: 'link', onclick: () => payFor(r) }, 'Payment')) },
-    ], rs, { foot: ['', 'Total', '', lit(sum('am')), lit(sum('pm')), lit(sum('total')), '', inr(sum('milk_amount')), inr(sum('extras_amount')), inr(sum('amount')), inr(sum('paid')), inr(sum('pending')), '', ''] }));
+    ], rs, { cls: 'freeze2', foot: ['', 'Total', '', lit(sum('am')), lit(sum('pm')), lit(sum('total')), '', inr(sum('milk_amount')), inr(sum('extras_amount')), inr(sum('amount')), inr(sum('paid')), inr(sum('pending')), '', ''] }));
   };
   // Payment dialog: shows what the customer bought and owes; the amount is pre-filled with the pending balance but can be changed.
   const payFor = guard(async (r) => {
@@ -366,7 +372,7 @@ pages.customers = crud({ title: 'Customer', sub: 'Master list — AM/PM defaults
   fields: () => [{ key: 'name', label: 'Nickname (only you see this)', required: true }, { key: 'bill_name', label: "Name on bill (the customer's own — they can also set it)" }, { key: 'phone', label: 'Phone' }, { key: 'am', label: 'AM default qty (L)', type: 'number', default: 0 }, { key: 'pm', label: 'PM default qty (L)', type: 'number', default: 0 },
     { key: 'price', label: 'Price per L (₹)', type: 'number', default: 55 }, { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Inactive'] },
     { key: 'from_date', label: 'From date — new customer: the day milk starts. Edit: the day the new quantity / price / status starts (earlier days stay as they were). Leave empty to change every date, past ones too.', type: 'date', default: today() }],
-  cols: [{ label: 'ID', key: 'id' }, { label: 'Nickname', render: (r) => h('span', {}, h('span', { class: 'nm' }, r.name), h('span', { class: 'idsub' }, r.id)) }, { label: 'Name on bill', render: (r) => r.bill_name || h('span', { class: 'mute' }, '—') }, { label: 'Phone', key: 'phone' }, { label: 'AM (L)', num: 1, render: (r) => lit(r.am) }, { label: 'PM (L)', num: 1, render: (r) => lit(r.pm) },
+  cols: [{ label: 'ID', key: 'id' }, { label: 'Nickname', render: (r) => nameCell(r.name, r.id) }, { label: 'Name on bill', render: (r) => r.bill_name || h('span', { class: 'mute' }, '—') }, { label: 'Phone', key: 'phone' }, { label: 'AM (L)', num: 1, render: (r) => lit(r.am) }, { label: 'PM (L)', num: 1, render: (r) => lit(r.pm) },
     { label: 'Total (L)', num: 1, render: (r) => lit(r.am + r.pm) }, { label: 'Price/L', num: 1, render: (r) => inr(r.price) }, { label: 'Status', render: (r) => pill(r.status) },
     { label: 'From', render: (r) => { // when the current quantity started, and any change dated later
       const t = today(), cur = (r.plans || []).filter((p) => p.from_date <= t && p.from_date > '0000-01-01').pop(), next = (r.plans || []).filter((p) => p.from_date > t);
@@ -413,10 +419,10 @@ pages.expenses = crud({ title: 'Expense', sub: 'Feed, medicine, labour and other
   total: (rs, n) => sumRow(n, 3, inr(rs.reduce((a, r) => a + r.amount, 0))) });
 
 const cowCalving = new Map(); // cow id -> expected calving date, from the newest pregnant AI record
-const cowsPage = crud({ title: 'Cow', sub: 'Cow master list.', resource: 'cows', monthly: false, master: true, pick: { key: 'lactation', label: 'Lactation', options: ['Lactating', 'Dry', 'Heifer', 'Calf'] },
+const cowsPage = crud({ title: 'Cow', sub: 'Cow master list.', resource: 'cows', monthly: false, master: true, cls: 'freeze2', pick: { key: 'lactation', label: 'Lactation', options: ['Lactating', 'Dry', 'Heifer', 'Calf'] },
   fields: () => [{ key: 'name', label: 'Name / number', required: true }, { key: 'breed', label: 'Breed' }, { key: 'lactation', label: 'Lactation status', type: 'select', options: ['', 'Lactating', 'Dry', 'Heifer', 'Calf'] },
     { key: 'calving_date', label: 'Calving date', type: 'date' }, { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Sold', 'Deceased'] }, { key: 'notes', label: 'Notes', type: 'textarea' }],
-  cols: [{ label: 'ID', key: 'id' }, { label: 'Name', key: 'name' }, { label: 'Breed', key: 'breed' }, { label: 'Lactation', key: 'lactation' }, { label: 'Last calving', key: 'calving_date' }, { label: 'Expected calving', render: (r) => (cowCalving.has(r.id) ? h('b', {}, dayLabel(cowCalving.get(r.id))) : h('span', { class: 'mute' }, '–')) }, { label: 'Status', key: 'status' }, { label: 'Notes', key: 'notes' }],
+  cols: [{ label: 'ID', key: 'id' }, { label: 'Name', render: (r) => nameCell(r.name, r.id) }, { label: 'Breed', key: 'breed' }, { label: 'Lactation', key: 'lactation' }, { label: 'Last calving', key: 'calving_date' }, { label: 'Expected calving', render: (r) => (cowCalving.has(r.id) ? h('b', {}, dayLabel(cowCalving.get(r.id))) : h('span', { class: 'mute' }, '–')) }, { label: 'Status', key: 'status' }, { label: 'Notes', key: 'notes' }],
   rowExtra: (r) => h('button', { class: 'link', onclick: () => aiDialog(r) }, 'AI') });
 pages.cows = async (v) => {
   cowCalving.clear();
