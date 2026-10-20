@@ -735,20 +735,6 @@ pages.notices = async (v) => {
 
 // ---------- customer portal ----------
 const P = { month: null, tab: 'bill' };
-// UPI pay: the button opens GPay/PhonePe/Paytm with our UPI ID and the amount filled in. On a big screen (computer) a QR code is added to scan with the phone.
-const UPI = { pa: 'rohanart17-1@oksbi', pn: 'GRV Dairy' };
-const upiLink = (amt, note) => `upi://pay?pa=${UPI.pa}&pn=${encodeURIComponent(UPI.pn)}&am=${Number(amt).toFixed(2)}&cu=INR&tn=${encodeURIComponent(note)}`;
-function payBox(amt, note) {
-  const link = upiLink(amt, note);
-  const box = h('div', { class: 'pay' }, h('a', { class: 'paybtn', href: link }, `Pay ${inr(amt)} with GPay / UPI`), h('div', { class: 'payid' }, `Opens GPay, PhonePe or Paytm — to ${UPI.pa}`));
-  if (!matchMedia('(min-width: 900px) and (pointer: fine)').matches) return box;
-  const qr = h('div', { class: 'payqr' }, 'Loading QR…');
-  const draw = () => { const q = qrcode(0, 'M'); q.addData(link); q.make(); qr.innerHTML = q.createSvgTag({ cellSize: 4, margin: 2 }); };
-  if (window.qrcode) draw();
-  else document.head.append(h('script', { src: 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js', onload: draw, onerror: () => qr.remove() }));
-  box.append(h('div', { class: 'payscan' }, qr, h('div', { class: 'payid' }, h('b', {}, 'On a computer?'), h('br'), 'Scan this with your phone to pay')));
-  return box;
-}
 pages.portal = async (v) => {
   const d = await api('portal' + (P.month ? '?month=' + P.month : ''));
   P.month = d.month;
@@ -770,7 +756,7 @@ pages.portal = async (v) => {
       h('p', { class: 'tag' }, upTo ? `Updated up to ${dayLabel(upTo)}. Each day is added at ${d.update_hour > 12 ? d.update_hour - 12 : d.update_hour} ${d.update_hour >= 12 ? 'PM' : 'AM'}.` : `Not updated yet — each day is added at ${d.update_hour > 12 ? d.update_hour - 12 : d.update_hour} ${d.update_hour >= 12 ? 'PM' : 'AM'}.`),
       h('div', { class: 'hero' }, h('div', { class: 'l' }, d.due > 0 ? 'Amount due' : 'All settled'), h('div', { class: 'big' }, inr(Math.max(d.due, 0))),
         h('div', { class: 'row' }, h('div', {}, 'Milk so far', h('b', {}, lit(d.total) + ' L')), h('div', {}, 'Bill so far', h('b', {}, inr(d.amount))), h('div', {}, 'You paid', h('b', {}, inr(d.paid))), h('div', {}, 'Pending', h('b', {}, inr(Math.max(d.due, 0))))),
-        d.due > 0 ? payBox(d.due, `Milk bill ${d.customer.id} ${monthLabel(d.month)}`) : null),
+        null),
       d.paid > 0 ? h('div', { class: 'thanks' }, h('div', { class: 'tick' }, '✓'), h('div', {}, h('b', {}, d.due > 0 ? 'Thank you for your payment!' : 'Thank you! Your bill is paid in full.'),
         h('div', { class: 'tag' }, d.due > 0 ? `We received ${inr(d.paid)}. ${inr(d.due)} is still pending.` : `We received ${inr(d.paid)}. Nothing is pending.`))) : null,
       monthCalendar(d),
