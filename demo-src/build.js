@@ -24,6 +24,7 @@ esbuild.buildSync({
     __dirname: '"/app/lib"',
     'process.env.TURSO_DATABASE_URL': 'undefined', 'process.env.TURSO_AUTH_TOKEN': 'undefined', 'process.env.VERCEL': 'undefined',
     'process.env.APP_TZ': '"Asia/Kolkata"', 'process.env.BILL_UPDATE_HOUR': 'undefined',
+    'process.env.VERCEL_DEPLOYMENT_ID': 'undefined', 'process.env.VERCEL_GIT_COMMIT_SHA': 'undefined',
     'process.env.ADMIN_PASSWORD': '"admin123"', 'process.env.DELIVERY_PASSWORD': '"delivery123"',
   },
 });
