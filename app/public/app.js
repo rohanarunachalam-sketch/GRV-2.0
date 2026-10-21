@@ -796,11 +796,31 @@ pages.portal = async (v) => {
         o.status === 'Booked' ? h('div', { class: 'ract' }, h('button', { class: 'abs', onclick: guard(async () => { if (!confirm('Cancel this booking?')) return; await api('portal/orders/' + o.id, 'DELETE'); toast('Cancelled'); again(); }) }, 'Cancel')) : null)))
         : h('p', { class: 'mute' }, 'You have not booked anything yet.'));
   } else if (P.tab === 'skip') {
+    // a fun pop-up after the request is sent; each request shows the next line in turn, then starts over
+    const NO_MILK_FUN = [
+      ['Planning to go out, I see… 👀😂 Enjoy!', 'வெளியே போக பிளான் பண்ணிட்டீங்க போல… 👀😂 Enjoy பண்ணுங்க!'],
+      ['Aha… taking a day off from us, I see! 😏😂', 'ஆஹா… எங்களுக்கும் ஒரு நாள் லீவு கொடுக்கிறீங்க போல! 😏😂'],
+      ['Looks like you have plans without us! 😂 Enjoy!', 'எங்களை விட்டுட்டு ஏதோ பிளான் இருக்கு போல! 😂 Enjoy பண்ணுங்க!'],
+      ['Looks like the milkman gets a little break! 🛵😂', 'பால்காரருக்கு ஒரு டெலிவரி லீவு! 🛵😂'],
+      ['Aha… saving space in the fridge, I see! 😏🥛😂', 'ஆஹா… ஃப்ரிட்ஜ்ல கொஞ்சம் இடம் சேமிக்கிறீங்க போல! 😏🥛😂'],
+      ['Fine… we’ll keep your bottle waiting for tomorrow! 😏🥛❤️', 'சரி… உங்க பாட்டில் நாளைக்கு வரைக்கும் காத்திருக்கட்டும்! 😏🥛❤️']];
+    const noMilkFun = (from, to) => {
+      const days = Math.round((new Date(to + 'T00:00') - new Date(from + 'T00:00')) / 864e5) + 1;
+      let i = 0; try { i = (Number(localStorage.getItem('grv.noMilkFun')) || 0) % NO_MILK_FUN.length; localStorage.setItem('grv.noMilkFun', i + 1); } catch {}
+      const [en, ta] = NO_MILK_FUN[i];
+      const dlg = $('#dlg'); dlg.innerHTML = '';
+      dlg.append(h('form', { class: 'form funny', method: 'dialog' }, h('div', { class: 'big-emoji' }, '🥛'),
+        h('h1', {}, 'No milk — ' + (days === 1 ? dayLabel(from) : `${days} days`)),
+        h('p', {}, en), h('p', { lang: 'ta' }, 'இன்னைக்கு பால் இல்லை — ' + ta),
+        h('p', { class: 'tag' }, 'Your delivery boy and the admin are notified.'),
+        h('div', { class: 'acts' }, h('button', { class: 'pri', type: 'submit' }, 'OK 👍'))));
+      dlg.showModal();
+    };
     const f = h('input', { type: 'date', value: d.tomorrow, min: d.today, required: true }), t = h('input', { type: 'date', value: d.tomorrow, min: d.today, required: true });
     f.addEventListener('change', () => { if (t.value < f.value) t.value = f.value; t.min = f.value; });
     const ses = h('select', {}, h('option', { value: 'AM' }, 'Morning'), h('option', { value: 'PM' }, 'Evening'), h('option', { value: 'BOTH' }, 'Morning & Evening'));
     const note = h('input', { type: 'text', placeholder: 'Optional note (e.g. out of town)', maxlength: 200 });
-    v.append(h('form', { class: 'form card', onsubmit: guard(async (e) => { e.preventDefault(); await api('portal/skips', 'POST', { from: f.value, to: t.value, session: ses.value, note: note.value }); toast('Sent to the delivery team'); again(); }) },
+    v.append(h('form', { class: 'form card', onsubmit: guard(async (e) => { e.preventDefault(); await api('portal/skips', 'POST', { from: f.value, to: t.value, session: ses.value, note: note.value }); noMilkFun(f.value, t.value); again(); }) },
       h('h2', { style: 'margin-top:0' }, "I don't need milk"), h('p', { class: 'tag' }, 'Your delivery boy and the admin are notified. You are not billed for the days you skip. You can pause from today too.'),
       h('label', {}, 'From', f), h('label', {}, 'To (last day)', t), h('label', {}, 'Which delivery', ses), h('label', {}, 'Note', note), h('button', { class: 'pri', type: 'submit' }, 'Send request')),
       h('h2', {}, 'Your requests'),

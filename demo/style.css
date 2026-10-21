@@ -155,6 +155,7 @@ dialog::backdrop{background:rgba(14,28,20,.45);backdrop-filter:blur(3px)}
 @keyframes fade{from{opacity:0}to{opacity:1}}
 @keyframes sheet{from{transform:translateY(100%)}to{transform:none}}
 dialog h1{font-size:20px;margin-bottom:14px}
+.funny{text-align:center}.funny p{font-size:16px;line-height:1.5;margin:0 0 10px}.form.funny .acts{justify-content:center}.big-emoji{font-size:52px;line-height:1;margin-bottom:8px}
 .form label{display:block;margin:0 0 14px;font-size:12.5px;font-weight:600;color:#46544b}
 .form input,.form select,.form textarea{display:block;width:100%;margin-top:6px;color:var(--ink);font-weight:400}
 .form .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:20px;padding-top:16px;border-top:1px solid var(--line);flex-wrap:wrap}
