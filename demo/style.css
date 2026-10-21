@@ -155,7 +155,11 @@ dialog::backdrop{background:rgba(14,28,20,.45);backdrop-filter:blur(3px)}
 @keyframes fade{from{opacity:0}to{opacity:1}}
 @keyframes sheet{from{transform:translateY(100%)}to{transform:none}}
 dialog h1{font-size:20px;margin-bottom:14px}
-.funny{text-align:center}.funny p{font-size:16px;line-height:1.5;margin:0 0 10px}.form.funny .acts{justify-content:center}.big-emoji{font-size:52px;line-height:1;margin-bottom:8px}
+.funny{text-align:center}.funny p{font-size:16px;line-height:1.5;margin:0 0 10px}.form.funny .acts{justify-content:center}
+.sad-cow{display:flex;justify-content:center;margin-bottom:6px}.cow-head{transform-origin:60px 100px;transform-box:view-box;animation:cowsway 2.4s ease-in-out infinite}.cow-tear{animation:cowtear 1.8s ease-in infinite}
+@keyframes cowsway{0%,100%{transform:rotate(-5deg)}50%{transform:rotate(5deg)}}
+@keyframes cowtear{0%{transform:translateY(0);opacity:0}15%{opacity:1}80%{opacity:1}100%{transform:translateY(22px);opacity:0}}
+@media (prefers-reduced-motion:reduce){.cow-head,.cow-tear{animation:none}}
 .form label{display:block;margin:0 0 14px;font-size:12.5px;font-weight:600;color:#46544b}
 .form input,.form select,.form textarea{display:block;width:100%;margin-top:6px;color:var(--ink);font-weight:400}
 .form .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:20px;padding-top:16px;border-top:1px solid var(--line);flex-wrap:wrap}

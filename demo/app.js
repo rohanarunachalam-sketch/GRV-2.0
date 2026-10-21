@@ -804,12 +804,30 @@ pages.portal = async (v) => {
       ['Looks like the milkman gets a little break! 🛵😂', 'பால்காரருக்கு ஒரு டெலிவரி லீவு! 🛵😂'],
       ['Aha… saving space in the fridge, I see! 😏🥛😂', 'ஆஹா… ஃப்ரிட்ஜ்ல கொஞ்சம் இடம் சேமிக்கிறீங்க போல! 😏🥛😂'],
       ['Fine… we’ll keep your bottle waiting for tomorrow! 😏🥛❤️', 'சரி… உங்க பாட்டில் நாளைக்கு வரைக்கும் காத்திருக்கட்டும்! 😏🥛❤️']];
+    // sad cow for the pop-up: head sways and a tear rolls down (animation in style.css)
+    const SAD_COW = `<svg viewBox="0 0 120 112" width="110" height="103">
+      <g class="cow-head">
+        <path d="M34 26 q-8 -14 -2 -20 q2 10 10 14z M86 26 q8 -14 2 -20 q-2 10 -10 14z" fill="#efe2c4" stroke="#3a2a20" stroke-width="2"/>
+        <ellipse cx="20" cy="44" rx="15" ry="8" transform="rotate(20 20 44)" fill="#f3e6d8" stroke="#3a2a20" stroke-width="2"/>
+        <ellipse cx="100" cy="44" rx="15" ry="8" transform="rotate(-20 100 44)" fill="#f3e6d8" stroke="#3a2a20" stroke-width="2"/>
+        <ellipse cx="60" cy="56" rx="35" ry="40" fill="#fff" stroke="#3a2a20" stroke-width="2.5"/>
+        <path d="M30 40 q4 -20 22 -22 q-4 12 -14 16 q-6 3 -8 6z" fill="#3a2a20"/>
+        <path d="M76 22 q10 2 12 12 q-8 0 -12 -12z" fill="#3a2a20"/>
+        <path d="M39 42 l13 -5 M81 42 l-13 -5" stroke="#3a2a20" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M41 51 q5 4 10 0 M69 51 q5 4 10 0" fill="none" stroke="#3a2a20" stroke-width="2.5" stroke-linecap="round"/>
+        <path class="cow-tear" d="M76 56 q-4 6 0 8 q4 -2 0 -8z" fill="#5bb4f0"/>
+        <ellipse cx="60" cy="80" rx="23" ry="15" fill="#f6b8c0" stroke="#3a2a20" stroke-width="2"/>
+        <ellipse cx="52" cy="77" rx="3" ry="4" fill="#3a2a20"/><ellipse cx="68" cy="77" rx="3" ry="4" fill="#3a2a20"/>
+        <path d="M53 89 q7 -5 14 0" fill="none" stroke="#3a2a20" stroke-width="2.2" stroke-linecap="round"/>
+      </g></svg>`;
     const noMilkFun = (from, to) => {
       const days = Math.round((new Date(to + 'T00:00') - new Date(from + 'T00:00')) / 864e5) + 1;
       let i = 0; try { i = (Number(localStorage.getItem('grv.noMilkFun')) || 0) % NO_MILK_FUN.length; localStorage.setItem('grv.noMilkFun', i + 1); } catch {}
       const [en, ta] = NO_MILK_FUN[i];
       const dlg = $('#dlg'); dlg.innerHTML = '';
-      dlg.append(h('form', { class: 'form funny', method: 'dialog' }, h('div', { class: 'big-emoji' }, '🥛'),
+      const cow = h('div', { class: 'sad-cow', 'aria-hidden': 'true' });
+      cow.innerHTML = SAD_COW;
+      dlg.append(h('form', { class: 'form funny', method: 'dialog' }, cow,
         h('h1', {}, 'No milk — ' + (days === 1 ? dayLabel(from) : `${days} days`)),
         h('p', {}, en), h('p', { lang: 'ta' }, 'இன்னைக்கு பால் இல்லை — ' + ta),
         h('p', { class: 'tag' }, 'Your delivery boy and the admin are notified.'),
