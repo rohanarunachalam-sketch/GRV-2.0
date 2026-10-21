@@ -745,7 +745,7 @@ pages.portal = async (v) => {
       h('label', {}, 'Your name', i), h('button', { class: 'pri', type: 'submit' }, 'Save name'));
   };
   const again = () => { v.innerHTML = ''; pages.portal(v).catch((e) => v.append(h('p', { class: 'bad' }, e.message))); };
-  const tabs = h('div', { class: 'seg' }, [['bill', 'My bill'], ['skip', 'No milk'], ['shop', 'Extras'], ['account', 'Account']].map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
+  const tabs = h('div', { class: 'seg' }, [['bill', 'My bill'], ['skip', 'No milk'], ['shop', 'GRV Shop'], ['account', 'Account']].map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
   v.append(h('div', { class: 'who-card' }, h('div', { class: 'avatar' }, (d.customer.name || d.customer.id).trim()[0]?.toUpperCase() || '?'), h('div', {}, h('h1', {}, d.customer.name || 'Welcome'), h('div', { class: 'tag' }, `Customer ${d.customer.id}`))), d.needs_name ? nameForm(true) : null, h('div', { class: 'bar' }, tabs));
 
   if (P.tab === 'bill') {
@@ -763,9 +763,9 @@ pages.portal = async (v) => {
       h('h2', {}, 'Daily details'),
       h('div', { class: 'tablewrap noselect' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Morning', 'Evening', 'Litres'].map((t, i) => h('th', { class: i ? 'n' : '' }, t)))), h('tbody', {}, rows),
         h('tfoot', {}, h('tr', {}, h('td', {}, 'Total'), h('td', { class: 'n' }, lit(d.am)), h('td', { class: 'n' }, lit(d.pm)), h('td', { class: 'n' }, lit(d.total)))))),
-      d.extras.length ? h('div', {}, h('h2', {}, 'Extras delivered'), h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Item', 'Qty', 'Amount'].map((t, i) => h('th', { class: i > 1 ? 'n' : '' }, t)))),
+      d.extras.length ? h('div', {}, h('h2', {}, 'GRV Shop items delivered'), h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Item', 'Qty', 'Amount'].map((t, i) => h('th', { class: i > 1 ? 'n' : '' }, t)))),
         h('tbody', {}, d.extras.map((x) => h('tr', {}, h('td', {}, dayLabel(x.date)), h('td', {}, x.product || 'Item'), h('td', { class: 'n' }, qtyText(x.qty, x.unit)), h('td', { class: 'n' }, inr(x.qty * x.price))))),
-        h('tfoot', {}, h('tr', {}, h('td', { colspan: 3 }, 'Extras total (included in your bill)'), h('td', { class: 'n' }, inr(d.extras_total))))))) : null,
+        h('tfoot', {}, h('tr', {}, h('td', { colspan: 3 }, 'GRV Shop total (included in your bill)'), h('td', { class: 'n' }, inr(d.extras_total))))))) : null,
       d.payments.length ? h('div', {}, h('h2', {}, 'Payments received'), h('div', { class: 'tablewrap' }, h('table', {}, h('tbody', {}, d.payments.map((p) => h('tr', {}, h('td', {}, p.date), h('td', {}, p.mode || ''), h('td', { class: 'n' }, inr(p.amount))))))))  : null,
       h('p', { class: 'tag' }, `Rate: ${inr(d.customer.price)} per litre.`));
   } else if (P.tab === 'shop') {
@@ -778,7 +778,7 @@ pages.portal = async (v) => {
         h('div', { style: 'margin:8px 0' }, i.left ? h('b', {}, `${qtyText(i.left, i.unit)} available`) : h('b', { class: 'bad' }, 'Sold out')),
         h('div', { class: 'bar' }, q, h('button', { class: 'pri', type: 'submit', disabled: !i.left }, 'Book')));
     };
-    v.append(h('h2', { style: 'margin-top:0' }, 'Extras'), h('p', { class: 'tag' }, 'Book egg, ghee, curd and more. The quantity left goes down as people book. The admin will deliver it to you.'),
+    v.append(h('h2', { style: 'margin-top:0' }, 'GRV Shop'), h('p', { class: 'tag' }, 'Book egg, ghee, curd and more. The quantity left goes down as people book. The admin will deliver it to you.'),
       sh.items.length ? h('div', { class: 'cards-list' }, sh.items.map(card)) : h('p', { class: 'mute' }, 'Nothing is available to book right now.'),
       h('h2', {}, 'My bookings'),
       sh.orders.length ? h('div', { class: 'cards-list' }, sh.orders.map((o) => h('div', { class: 'rcard' }, h('div', { class: 'rname' }, `${o.product || 'Item'} — ${qtyText(o.qty, o.unit)}`),
