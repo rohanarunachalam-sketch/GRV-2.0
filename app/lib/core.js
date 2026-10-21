@@ -685,6 +685,8 @@ route('DELETE', '/api/portal/skips/(\\d+)', async ({ m, user }) => {
 
 // ---- request handler (Node req/res; works for http.createServer and Vercel functions)
 const SESSION_MS = 30 * 24 * 3600 * 1000;
+// changes with every deploy (or local restart); open pages compare it and reload themselves to pick up new code
+const APP_VERSION = process.env.VERCEL_DEPLOYMENT_ID || process.env.VERCEL_GIT_COMMIT_SHA || String(Date.now());
 const cookieOf = (req, name) => (req.headers.cookie || '').split(/;\s*/).map((c) => c.split('=')).find((c) => c[0] === name)?.[1];
 async function sessionOf(req) {
   const t = cookieOf(req, 'grv_sid'); if (!t) return null;
@@ -701,7 +703,7 @@ const readBody = (req) => new Promise((resolve, reject) => {
 
 async function handle(req, res) {
   const url = new URL(req.url, 'http://x');
-  const send = (code, body, type = 'application/json; charset=utf-8', extra = {}) => { res.writeHead(code, { 'Content-Type': type, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', ...extra }); res.end(body); };
+  const send = (code, body, type = 'application/json; charset=utf-8', extra = {}) => { res.writeHead(code, { 'Content-Type': type, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', 'X-App-Version': APP_VERSION, ...extra }); res.end(body); };
   const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
   try {
     await init();

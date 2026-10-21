@@ -17,8 +17,18 @@ const today = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.g
 const monthLabel = (m) => new Date(m + '-01T00:00').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
 const dayLabel = (d) => new Date(d + 'T00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
 
+// ---------- auto update: a new deploy changes the server's X-App-Version; reload at a quiet moment so nobody has to refresh ----------
+let appVer = null, updateReady = false;
+const typing = () => { const a = document.activeElement; return !!a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName) && a.value !== ''; };
+const reloadIfUpdated = () => { if (updateReady && !typing()) { location.reload(); return true; } return false; };
+const checkForUpdate = () => api('me').catch(() => {}).then(reloadIfUpdated);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForUpdate(); }); // back to the app from another app or tab
+setInterval(() => { if (document.visibilityState === 'visible') checkForUpdate(); }, 5 * 60 * 1000);
+
 async function api(path, method = 'GET', body) {
   const r = await fetch('/api/' + path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const ver = r.headers.get('X-App-Version');
+  if (ver) { if (!appVer) appVer = ver; else if (ver !== appVer) updateReady = true; }
   const j = await r.json().catch(() => ({}));
   if (r.status === 401 && path !== 'login' && path !== 'me') { S.user = null; render(); throw new Error('Please sign in'); }
   if (!r.ok) throw new Error(j.error || r.statusText);
@@ -874,6 +884,6 @@ async function render() {
 }
 $('#menu').addEventListener('click', () => $('#nav').classList.toggle('open'));
 $('#logout').addEventListener('click', guard(async () => { await api('logout', 'POST'); S.user = null; S.lists = null; render(); }));
-window.addEventListener('hashchange', () => { D.data = null; render(); });
+window.addEventListener('hashchange', () => { if (reloadIfUpdated()) return; D.data = null; render(); });
 monthInput.addEventListener('change', () => { D.data = null; });
 render();
