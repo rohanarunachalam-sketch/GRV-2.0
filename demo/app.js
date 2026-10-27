@@ -154,16 +154,16 @@ function milkSummary() {
     const stat = (l, val, c) => h('div', {}, h('div', { class: 'l' }, l), h('div', { class: 'v ' + (c || '') }, val));
     out.innerHTML = '';
     out.append(h('div', { class: 'tm-row' }, stat('Total milk yield', lit(sum('yield')) + ' L'), stat('Total sold', lit(sum('sold')) + ' L'),
-      stat(left >= 0 ? 'Left over' : 'Short', lit(Math.abs(left)) + ' L', left >= 0 ? 'good' : 'bad'), stat('Days', rows.length)),
+      stat(left >= 0 ? 'Left over' : 'Short', lit(Math.abs(left)) + ' L', left >= 0 ? 'good' : 'bad'), stat('Approx. amount (sold L × price)', inr(sum('amount'))), stat('Days', rows.length)),
       h('details', { class: 'ms-days' }, h('summary', {}, 'Show each day'), table([{ label: 'Date', render: (r) => dayLabel(r.date) }, { label: 'Yield L', num: 1, render: (r) => lit(r.yield) }, { label: 'Sold L', num: 1, render: (r) => lit(r.sold) },
-        { label: 'Left / short', num: 1, render: (r) => h('span', { class: r.left < 0 ? 'bad' : '' }, (r.left < 0 ? '−' : '') + lit(Math.abs(r.left))) }], rows,
-      { foot: ['Total', lit(sum('yield')), lit(sum('sold')), (left < 0 ? '−' : '') + lit(Math.abs(left))] })));
+        { label: 'Left / short', num: 1, render: (r) => h('span', { class: r.left < 0 ? 'bad' : '' }, (r.left < 0 ? '−' : '') + lit(Math.abs(r.left))) }, { label: 'Approx. ₹', num: 1, render: (r) => inr(r.amount) }], rows,
+      { foot: ['Total', lit(sum('yield')), lit(sum('sold')), (left < 0 ? '−' : '') + lit(Math.abs(left)), inr(sum('amount'))] })));
   });
   const preset = (a, b) => () => { fromIn.value = a; toIn.value = b; show(); };
   const lm = shiftMonth(t.slice(0, 7), -1);
   const download = guard(async () => {
     if (!rows.length) return toast('Nothing to download', true);
-    const sheet = rows.map((r) => ({ Date: r.date, 'Yield AM (L)': r.yield_am, 'Yield PM (L)': r.yield_pm, 'Total yield (L)': r.yield, 'Sold AM (L)': r.sold_am, 'Sold PM (L)': r.sold_pm, 'Total sold (L)': r.sold, 'Left over / short (L)': r.left }));
+    const sheet = rows.map((r) => ({ Date: r.date, 'Yield AM (L)': r.yield_am, 'Yield PM (L)': r.yield_pm, 'Total yield (L)': r.yield, 'Sold AM (L)': r.sold_am, 'Sold PM (L)': r.sold_pm, 'Total sold (L)': r.sold, 'Left over / short (L)': r.left, 'Approx. amount (₹)': r.amount }));
     const tot = (k) => Math.round(sheet.reduce((a, r) => a + r[k], 0) * 100) / 100;
     sheet.push(Object.fromEntries(Object.keys(sheet[0]).map((k) => [k, k === 'Date' ? 'Total' : tot(k)])));
     const blob = new Blob([makeXlsx({ 'Milk summary': sheet })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -175,6 +175,38 @@ function milkSummary() {
     h('div', { class: 'bar' }, h('label', { class: 'ms-l' }, 'From ', fromIn), h('label', { class: 'ms-l' }, 'To ', toIn), h('button', { class: 'pri', onclick: show }, 'Show'), h('button', { onclick: download }, '⬇ Download Excel')),
     h('div', { class: 'bar' }, h('button', { class: 'link', onclick: preset(first(t.slice(0, 7)), t) }, 'This month'), h('button', { class: 'link', onclick: preset(first(lm), last(lm)) }, 'Last month'),
       h('button', { class: 'link', onclick: preset(back(6), t) }, 'Last 7 days'), h('button', { class: 'link', onclick: preset(t, t) }, 'Today')), out);
+  show();
+  return card;
+}
+
+// Money collected (payments received) on the days you pick — total, split by payment mode, and each payment.
+const CS = { from: null, to: null };
+function collectionSummary() {
+  const t = today();
+  const back = (n) => { const d = new Date(t + 'T00:00'); d.setDate(d.getDate() - n); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+  if (!CS.from) CS.from = CS.to = t;
+  const fromIn = h('input', { type: 'date', value: CS.from, max: t }), toIn = h('input', { type: 'date', value: CS.to, max: t });
+  const out = h('div');
+  const show = guard(async () => {
+    if (!fromIn.value || !toIn.value) return;
+    CS.from = fromIn.value; CS.to = toIn.value;
+    out.innerHTML = ''; out.append(h('p', { class: 'tag' }, 'Loading…'));
+    const rows = await api(`collections?from=${CS.from}&to=${CS.to}`);
+    const total = rows.reduce((a, r) => a + r.amount, 0), byMode = {};
+    for (const r of rows) byMode[r.mode || 'Other'] = (byMode[r.mode || 'Other'] || 0) + r.amount;
+    const stat = (l, val, c) => h('div', {}, h('div', { class: 'l' }, l), h('div', { class: 'v ' + (c || '') }, val));
+    out.innerHTML = '';
+    out.append(h('div', { class: 'tm-row' }, stat(CS.from === CS.to ? `Collected on ${dayLabel(CS.from)}` : 'Total collected', inr(total), 'good'), stat('Payments', rows.length),
+      Object.entries(byMode).sort((a, b) => b[1] - a[1]).map(([m, v]) => stat(m, inr(v)))),
+      rows.length ? h('details', { class: 'ms-days' }, h('summary', {}, 'Show each payment'), table([{ label: 'Date', render: (r) => dayLabel(r.date) }, { label: 'Customer', render: (r) => r.name || r.customer_id },
+        { label: 'For bill', render: (r) => monthLabel(r.bill_month) }, { label: 'Mode', key: 'mode' }, { label: 'Amount', num: 1, render: (r) => inr(r.amount) }], rows,
+      { foot: ['Total', '', '', '', inr(total)] })) : h('p', { class: 'tag' }, 'No payments received on these days.'));
+  });
+  const preset = (a, b) => () => { fromIn.value = a; toIn.value = b; show(); };
+  const card = h('div', { class: 'card todaymilk' }, h('h2', { style: 'margin-top:0' }, 'Money collected'),
+    h('div', { class: 'bar' }, h('label', { class: 'ms-l' }, 'From ', fromIn), h('label', { class: 'ms-l' }, 'To ', toIn), h('button', { class: 'pri', onclick: show }, 'Show')),
+    h('div', { class: 'bar' }, h('button', { class: 'link', onclick: preset(t, t) }, 'Today'), h('button', { class: 'link', onclick: preset(back(1), back(1)) }, 'Yesterday'),
+      h('button', { class: 'link', onclick: preset(back(6), t) }, 'Last 7 days'), h('button', { class: 'link', onclick: preset(t.slice(0, 7) + '-01', t) }, 'This month')), out);
   show();
   return card;
 }
@@ -568,7 +600,7 @@ pages.yield = async (v) => {
 pages.daily = async (v) => {
   const rows = await api('daily?month=' + S.month);
   v.append(h('h1', {}, 'Daily Summary'), h('p', { class: 'sub' }, `${monthLabel(S.month)} — litres, deliveries and estimated sales per day.`),
-    milkSummary(), h('h2', {}, `Deliveries — ${monthLabel(S.month)}`),
+    collectionSummary(), milkSummary(), h('h2', {}, `Deliveries — ${monthLabel(S.month)}`),
     table([{ label: 'Date', render: (r) => dayLabel(r.date) }, { label: 'AM L', num: 1, render: (r) => lit(r.am) }, { label: 'PM L', num: 1, render: (r) => lit(r.pm) }, { label: 'Total L', num: 1, render: (r) => lit(r.total) },
       { label: 'Deliveries', num: 1, key: 'served' }, { label: 'Absent entries', num: 1, key: 'absent' }, { label: 'Est. sales', num: 1, render: (r) => inr(r.sales) }], rows,
       { foot: ['Total', lit(rows.reduce((a, r) => a + r.am, 0)), lit(rows.reduce((a, r) => a + r.pm, 0)), lit(rows.reduce((a, r) => a + r.total, 0)), '', rows.reduce((a, r) => a + r.absent, 0), inr(rows.reduce((a, r) => a + r.sales, 0))] }));
@@ -729,8 +761,18 @@ pages.notices = async (v) => {
       admin ? h('div', { class: 'ract' }, h('button', { class: 'abs', onclick: guard(async () => { if (!confirm(k.from <= d.today ? 'End this request from today? (Past days stay as they were.)' : 'Cancel this request?')) return; await api('skips/' + k.id, 'DELETE'); toast('Done'); render(); }) }, k.from <= d.today ? 'End from today' : 'Cancel request')) : null);
   };
   const section = (title, items, empty) => h('div', {}, h('h2', {}, title), items.length ? h('div', { class: 'cards-list' }, items.map(card)) : h('p', { class: 'mute' }, empty));
+  // more / less milk asks from customers: accepting sets that day's quantity, so the delivery list and both bills follow it
+  const decide = (r, status) => guard(async () => {
+    if (status === 'Rejected' && !confirm(`Reject ${r.name}'s request?`)) return;
+    await api('qty-requests/' + r.id, 'PUT', { status }); toast(status === 'Accepted' ? 'Accepted — quantity updated' : 'Rejected'); render();
+  });
+  const reqCard = (r) => h('div', { class: 'rcard change' }, h('div', { class: 'chg-tag' }, '🥛 Change milk'), h('div', { class: 'rtop' }, h('div', {}, h('div', { class: 'rname' }, r.name), h('div', { class: 'tag' }, `${r.customer_id} · ${sess(r.session)}`)),
+      h('div', { class: 'qty', style: 'font-size:15px;text-align:right' }, `${lit(r.usual)} → ${lit(r.qty)} L`, h('div', { class: 'tag ' + (r.qty > r.usual ? 'good' : 'bad') }, r.qty > r.usual ? `${lit(r.qty - r.usual)} L more` : r.qty < r.usual ? `${lit(r.usual - r.qty)} L less` : 'same as usual'))),
+    h('div', { style: 'margin-top:6px' }, '📅 ', dayLabel(r.date), r.note ? h('div', { class: 'tag' }, '“' + r.note + '”') : null),
+    h('div', { class: 'ract' }, h('button', { class: 'pri', onclick: decide(r, 'Accepted') }, 'Accept'), h('button', { class: 'abs', onclick: decide(r, 'Rejected') }, 'Reject')));
   v.append(h('h1', {}, 'Notices'), h('p', { class: 'sub' }, 'Customers who asked for no milk. A request stays here for every day it covers — and the delivery list and bills follow it automatically.'),
     admin ? h('div', { class: 'bar' }, h('button', { class: 'pri', onclick: () => addSkip() }, '+ Add request (phone call)')) : null,
+    admin && d.requests.length ? h('div', {}, h('h2', { class: 'chg-head' }, `🥛 Change milk requests (${d.requests.length})`), h('div', { class: 'cards-list' }, d.requests.map(reqCard))) : null,
     section(`✕ Don't deliver today (${d.today.split('-').reverse().join('/')})`, now, 'No customer has asked to skip today.'),
     section('Coming up', later, 'Nothing scheduled.'));
   async function addSkip() {
@@ -744,6 +786,24 @@ pages.notices = async (v) => {
 };
 
 // ---------- customer portal ----------
+// Big round buttons that always show every choice. If nothing is picked the whole box turns red,
+// so a customer who can't read well still sees what is missing.
+function choices(title, opts) {
+  const name = 'ch' + Math.random().toString(36).slice(2);
+  const box = h('fieldset', { class: 'choices' }, h('legend', {}, title),
+    opts.map(([v, l]) => h('label', { class: 'choice' }, h('input', { type: 'radio', name, value: v, onchange: () => box.classList.remove('missing') }), h('span', {}, l))),
+    h('div', { class: 'miss-msg' }, '⚠ Choose one'));
+  Object.defineProperty(box, 'value', { get: () => box.querySelector('input:checked')?.value || '' });
+  box.need = () => {
+    if (box.value) return true;
+    box.classList.remove('missing'); void box.offsetWidth; box.classList.add('missing'); // restart the shake
+    box.scrollIntoView({ block: 'center', behavior: 'smooth' }); toast(title + ': choose one', true);
+    return false;
+  };
+  return box;
+}
+// red box around an empty or wrong number field until it is fixed
+const markMissing = (input, msg) => { input.classList.add('missing'); input.addEventListener('input', () => input.classList.remove('missing'), { once: true }); input.focus(); toast(msg, true); };
 const P = { month: null, tab: 'bill' };
 pages.portal = async (v) => {
   const d = await api('portal' + (P.month ? '?month=' + P.month : ''));
@@ -755,7 +815,7 @@ pages.portal = async (v) => {
       h('label', {}, 'Your name', i), h('button', { class: 'pri', type: 'submit' }, 'Save name'));
   };
   const again = () => { v.innerHTML = ''; pages.portal(v).catch((e) => v.append(h('p', { class: 'bad' }, e.message))); };
-  const tabs = h('div', { class: 'seg' }, [['bill', 'My bill'], ['skip', 'No milk'], ['shop', 'GRV Shop'], ['account', 'Account']].map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
+  const tabs = h('div', { class: 'seg' }, [['bill', 'My bill'], ['skip', 'No milk'], ['change', 'Change milk'], ['shop', 'GRV Shop'], ['account', 'Account']].map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
   v.append(h('div', { class: 'who-card' }, h('div', { class: 'avatar' }, (d.customer.name || d.customer.id).trim()[0]?.toUpperCase() || '?'), h('div', {}, h('h1', {}, d.customer.name || 'Welcome'), h('div', { class: 'tag' }, `Customer ${d.customer.id}`))), d.needs_name ? nameForm(true) : null, h('div', { class: 'bar' }, tabs));
 
   if (P.tab === 'bill') {
@@ -836,14 +896,89 @@ pages.portal = async (v) => {
     };
     const f = h('input', { type: 'date', value: d.tomorrow, min: d.today, required: true }), t = h('input', { type: 'date', value: d.tomorrow, min: d.today, required: true });
     f.addEventListener('change', () => { if (t.value < f.value) t.value = f.value; t.min = f.value; });
-    const ses = h('select', {}, h('option', { value: 'AM' }, 'Morning'), h('option', { value: 'PM' }, 'Evening'), h('option', { value: 'BOTH' }, 'Morning & Evening'));
+    // nothing is picked at first, so an evening-only customer can't skip the morning by mistake
+    const ses = choices('Which delivery', [['AM', '🌅 Morning'], ['PM', '🌇 Evening'], ['BOTH', '🌅🌇 Morning & Evening']]);
     const note = h('input', { type: 'text', placeholder: 'Optional note (e.g. out of town)', maxlength: 200 });
-    v.append(h('form', { class: 'form card', onsubmit: guard(async (e) => { e.preventDefault(); await api('portal/skips', 'POST', { from: f.value, to: t.value, session: ses.value, note: note.value }); noMilkFun(f.value, t.value); again(); }) },
+    v.append(h('form', { class: 'form card', onsubmit: guard(async (e) => { e.preventDefault(); if (!ses.need()) return; await api('portal/skips', 'POST', { from: f.value, to: t.value, session: ses.value, note: note.value }); noMilkFun(f.value, t.value); again(); }) },
       h('h2', { style: 'margin-top:0' }, "I don't need milk"), h('p', { class: 'tag' }, 'Your delivery boy and the admin are notified. You are not billed for the days you skip. You can pause from today too.'),
-      h('label', {}, 'From', f), h('label', {}, 'To (last day)', t), h('label', {}, 'Which delivery', ses), h('label', {}, 'Note', note), h('button', { class: 'pri', type: 'submit' }, 'Send request')),
+      h('label', {}, 'From', f), h('label', {}, 'To (last day)', t), ses, h('label', {}, 'Note', note), h('button', { class: 'pri', type: 'submit' }, 'Send request')),
       h('h2', {}, 'Your requests'),
       d.skips.length ? h('div', { class: 'cards-list' }, d.skips.map((k) => h('div', { class: 'rcard' }, h('div', { class: 'rname' }, k.from === k.to ? dayLabel(k.from) : `${dayLabel(k.from)} → ${dayLabel(k.to)}`), h('div', { class: 'tag' }, { AM: 'Morning', PM: 'Evening', BOTH: 'Morning & Evening' }[k.session] + (k.note ? ' · ' + k.note : '')),
         h('div', { class: 'ract' }, h('button', { class: 'abs', onclick: guard(async () => { if (!confirm(k.from <= d.today ? 'Start getting milk again from today?' : 'Cancel this request?')) return; await api('portal/skips/' + k.id, 'DELETE'); toast('Done'); again(); }) }, k.from <= d.today ? 'Resume milk from today' : 'Cancel'))))) : h('p', { class: 'mute' }, 'No active requests.'));
+  } else if (P.tab === 'change') {
+    // more or less milk on one delivery; the admin accepts it, then the delivery list and bill use the new quantity
+    const reqs = await api('portal/qty-requests');
+    const usual = (s) => (s === 'AM' ? d.customer.am : d.customer.pm);
+    const dt = h('input', { type: 'date', value: d.tomorrow, required: true }); // any day: past days can be corrected too
+    const ses = choices('Which delivery', [['AM', '🌅 Morning'], ['PM', '🌇 Evening']]);
+    const qty = h('input', { type: 'number', min: 0.25, step: 'any', inputmode: 'decimal', placeholder: 'Litres' });
+    const note = h('input', { type: 'text', placeholder: 'Optional note (e.g. guests at home)', maxlength: 200 });
+    const hint = h('p', { class: 'tag' }, 'Choose morning or evening to see your usual quantity.');
+    const showHint = () => {
+      if (!ses.value) return;
+      const u = usual(ses.value), q = Number(qty.value);
+      hint.textContent = `Usually you get ${lit(u)} L in the ${ses.value === 'AM' ? 'morning' : 'evening'}.` + (qty.value && q > 0 ? (q > u ? ` ↑ ${lit(q - u)} L more` : q < u ? ` ↓ ${lit(u - q)} L less` : ' Same as usual.') : '');
+    };
+    ses.addEventListener('change', showHint); qty.addEventListener('input', showHint);
+    const SES = { AM: 'Morning', PM: 'Evening' };
+    // pop-up after sending: for more milk the cow drips extra milk into the bucket; for less, the drops float back up into the cow
+    const MILK_COW = (diff) => `<svg viewBox="0 0 220 170" width="250" height="193">
+      <rect width="220" height="170" fill="#e3f1fb"/><rect y="148" width="220" height="22" fill="#cfe8c4"/>
+      <g class="mc-cow">
+        <path d="M40 54 q-18 6 -16 38" fill="none" stroke="#3a2a20" stroke-width="3" stroke-linecap="round"/><ellipse cx="24" cy="94" rx="4" ry="6" fill="#3a2a20"/>
+        <g fill="#fff" stroke="#3a2a20" stroke-width="2"><rect x="50" y="78" width="11" height="68" rx="4"/><rect x="66" y="78" width="11" height="68" rx="4"/><rect x="128" y="78" width="11" height="68" rx="4"/><rect x="144" y="78" width="11" height="68" rx="4"/></g>
+        <g fill="#3a2a20"><rect x="50" y="140" width="11" height="6" rx="2"/><rect x="66" y="140" width="11" height="6" rx="2"/><rect x="128" y="140" width="11" height="6" rx="2"/><rect x="144" y="140" width="11" height="6" rx="2"/></g>
+        <rect x="36" y="34" width="128" height="58" rx="28" fill="#fff" stroke="#3a2a20" stroke-width="2.5"/>
+        <path d="M60 36 q14 -4 20 8 q-4 14 -18 12 q-10 -6 -2 -20z M112 60 q14 -6 22 4 q0 14 -14 14 q-12 -2 -8 -18z" fill="#3a2a20"/>
+        <path d="M86 90 q15 20 30 0z" fill="#f6b8c0" stroke="#3a2a20" stroke-width="2"/>
+        <g fill="#f6b8c0" stroke="#3a2a20" stroke-width="1.2"><rect x="93" y="100" width="4.5" height="9" rx="2"/><rect x="104.5" y="100" width="4.5" height="9" rx="2"/></g>
+        <g class="mc-head">
+          <path d="M166 22 q-4 -10 2 -14 q0 8 6 10z M194 22 q4 -10 -2 -14 q0 8 -6 10z" fill="#efe2c4" stroke="#3a2a20" stroke-width="1.5"/>
+          <ellipse cx="160" cy="34" rx="11" ry="6" transform="rotate(-25 160 34)" fill="#f3e6d8" stroke="#3a2a20" stroke-width="2"/>
+          <ellipse cx="200" cy="34" rx="11" ry="6" transform="rotate(25 200 34)" fill="#f3e6d8" stroke="#3a2a20" stroke-width="2"/>
+          <ellipse cx="180" cy="44" rx="20" ry="24" fill="#fff" stroke="#3a2a20" stroke-width="2.5"/>
+          <circle cx="172" cy="38" r="2.8" fill="#3a2a20"/><circle cx="188" cy="38" r="2.8" fill="#3a2a20"/>
+          <ellipse cx="180" cy="58" rx="14" ry="10" fill="#f6b8c0" stroke="#3a2a20" stroke-width="2"/>
+          <circle cx="175" cy="56" r="1.8" fill="#3a2a20"/><circle cx="185" cy="56" r="1.8" fill="#3a2a20"/>
+          ${diff > 0 ? '<path d="M173 62 q7 5 14 0" fill="none" stroke="#3a2a20" stroke-width="2" stroke-linecap="round"/>' : '<ellipse cx="180" cy="64" rx="3" ry="2.5" fill="#3a2a20"/>'}
+        </g>
+      </g>
+      <g fill="#fff" stroke="#5f8db3" stroke-width="1.4"><ellipse class="mc-drop" cx="95.2" cy="113" rx="3.2" ry="4.4"/><ellipse class="mc-drop d2" cx="106.7" cy="113" rx="3.2" ry="4.4"/><ellipse class="mc-drop d3" cx="101" cy="113" rx="3.2" ry="4.4"/></g>
+      <clipPath id="mc-bucket"><path d="M83 129 h38 l-4.6 21 h-28.8z"/></clipPath>
+      <path d="M80 127 h44 l-5 25 h-34z" fill="#b8c4cc" stroke="#3a2a20" stroke-width="2" stroke-linejoin="round"/>
+      <rect class="mc-milk" x="80" y="129" width="44" height="21" fill="#fffdf6" clip-path="url(#mc-bucket)"/>
+      <text x="14" y="26" font-size="17" font-weight="700" fill="${diff > 0 ? '#1c7a44' : '#b42318'}">${diff > 0 ? '+' : '−'}${lit(Math.abs(diff))} L</text>
+    </svg>`;
+    const milkCowPop = (date, s, q, u) => {
+      const diff = Math.round((q - u) * 100) / 100;
+      if (!diff) return toast('Request sent to the admin');
+      const more = diff > 0;
+      const dlg = $('#dlg'); dlg.innerHTML = '';
+      const cow = h('div', { class: 'milk-cow ' + (more ? 'more' : 'less'), 'aria-hidden': 'true' });
+      cow.innerHTML = MILK_COW(diff);
+      dlg.append(h('form', { class: 'form funny', method: 'dialog' }, cow,
+        h('h1', {}, `${more ? 'Extra milk' : 'Less milk'} — ${dayLabel(date)} ${SES[s].toLowerCase()}`),
+        h('p', {}, more ? 'Moo! The cow is giving extra milk just for you! 🐄🥛' : 'Oops! The cow is drinking the extra milk back! 😄🐄'),
+        h('p', { lang: 'ta' }, more ? 'ம்ம்மா! உங்களுக்காக பசு கூடுதல் பால் தருது! 🐄🥛' : 'அச்சச்சோ! பசு கூடுதல் பாலை திரும்ப குடிச்சிடுச்சு! 😄🐄'),
+        h('p', { class: 'tag' }, `You asked for ${lit(q)} L (usually ${lit(u)} L). Your bill changes once the admin accepts.`),
+        h('div', { class: 'acts' }, h('button', { class: 'pri', type: 'submit' }, 'OK 👍'))));
+      dlg.showModal();
+    };
+    const change = (r) => (r.qty > r.usual ? `↑ ${lit(r.qty - r.usual)} L more` : r.qty < r.usual ? `↓ ${lit(r.usual - r.qty)} L less` : 'same as usual');
+    v.append(h('form', { class: 'form card', onsubmit: guard(async (e) => {
+      e.preventDefault();
+      if (!ses.need()) return;
+      if (!(Number(qty.value) > 0)) return markMissing(qty, 'Enter the litres you want');
+      await api('portal/qty-requests', 'POST', { date: dt.value, session: ses.value, qty: qty.value, note: note.value });
+      milkCowPop(dt.value, ses.value, Number(qty.value), usual(ses.value)); again();
+    }) },
+      h('h2', { style: 'margin-top:0' }, 'Need more or less milk?'), h('p', { class: 'tag' }, 'Pick the day and delivery, and how many litres you want. The admin will accept it, and your bill changes automatically.'),
+      h('label', {}, 'Date', dt), ses, h('label', {}, 'Litres you want', qty), hint, h('label', {}, 'Note', note), h('button', { class: 'pri', type: 'submit' }, 'Send request')),
+      h('h2', {}, 'Your change requests'),
+      reqs.length ? h('div', { class: 'cards-list' }, reqs.slice().reverse().map((r) => h('div', { class: 'rcard' }, h('div', { class: 'rname' }, `${dayLabel(r.date)} · ${SES[r.session]}`),
+        h('div', { class: 'tag' }, `${lit(r.qty)} L (${change(r)})` + (r.note ? ' · ' + r.note : '')), h('div', { style: 'margin-top:6px' }, pill(r.status === 'Pending' ? 'Waiting' : r.status)),
+        r.status === 'Pending' ? h('div', { class: 'ract' }, h('button', { class: 'abs', onclick: guard(async () => { if (!confirm('Cancel this request?')) return; await api('portal/qty-requests/' + r.id, 'DELETE'); toast('Cancelled'); again(); }) }, 'Cancel')) : null)))
+        : h('p', { class: 'mute' }, 'No requests yet.'));
   } else {
     const o = h('input', { type: 'password', autocomplete: 'current-password', required: true }), n1 = h('input', { type: 'password', autocomplete: 'new-password', minlength: 6, required: true }), n2 = h('input', { type: 'password', autocomplete: 'new-password', minlength: 6, required: true });
     v.append(nameForm(false), h('form', { class: 'form card', style: 'margin-top:12px', onsubmit: guard(async (e) => { e.preventDefault(); if (n1.value !== n2.value) return toast('New passwords do not match', true); await api('portal/password', 'PUT', { old: o.value, password: n1.value }); toast('Password changed'); again(); }) },
@@ -860,7 +995,8 @@ function monthCalendar(d) {
   const cls = { Delivered: 'ok', Paused: 'pause', Unavailable: 'out' };
   return h('div', { class: 'cal noselect' },
     h('div', { class: 'cal-grid' }, ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((w) => h('div', { class: 'cal-w' }, w)),
-      cells.map((x) => x ? h('div', { class: 'cal-d ' + (cls[x.st] || ''), title: x.st ? (x.st === 'Unavailable' ? 'Milk Unavailable' : x.st) : '' }, Number(x.date.slice(8))) : h('div', {}))),
+      // dates pop in as a diagonal wave (row + column sets the delay); today's date keeps a gentle pulse
+      cells.map((x, i) => x ? h('div', { class: 'cal-d ' + (cls[x.st] || '') + (x.date === d.today ? ' today' : ''), style: `--w:${Math.floor(i / 7) + (i % 7)}`, title: x.st ? (x.st === 'Unavailable' ? 'Milk Unavailable' : x.st) : '' }, Number(x.date.slice(8))) : h('div', {}))),
     h('div', { class: 'cal-key' }, h('span', { class: 'ok' }, 'Delivered'), h('span', { class: 'pause' }, 'Paused'), h('span', { class: 'out' }, 'Milk Unavailable')));
 }
 const NAV = [['dashboard', 'Dashboard'], ['delivery', 'Delivery'], ['notices', 'Notices'], ['daily', 'Daily Summary'], ['bills', 'Bills'], ['customers', 'Customers'], ['income', 'Income'], ['expenses', 'Expenses'], ['pnl', 'P&L'], ['cows', 'Cows'], ['yield', 'Cow Yield'], ['extras', 'Extras'], ['settings', 'Settings']];
@@ -902,7 +1038,7 @@ async function render() {
   else page = hashPage || 'dashboard';
   // the red count bubbles load in the background so they never hold the page up
   const badgeP = Promise.all([
-    role !== 'customer' ? api('notices').then((n) => n.items.filter((k) => k.from <= n.today).length, () => 0) : 0,
+    role !== 'customer' ? api('notices').then((n) => [n.items.filter((k) => k.from <= n.today).length, (n.requests || []).length], () => [0, 0]) : [0, 0],
     admin ? api('cow-alerts').then((a) => a.length, () => 0) : 0]);
   const links = admin ? NAV : role === 'delivery' ? DELIVERY_NAV : [];
   for (const [k, l] of links) nav.append(h('a', { href: '#/' + k, class: k === page || (page === 'bill' && k === 'bills') ? 'on' : '' }, l));
@@ -911,10 +1047,13 @@ async function render() {
   document.body.classList.toggle('customer', role === 'customer');
   const v = $('#view'); v.innerHTML = '';
   v.append = (...kids) => Element.prototype.append.apply(v, kids.flat().filter((k) => k != null && k !== false)); // pages may pass null for "nothing"
-  badgeP.then(([badge, cowBadge]) => {
+  badgeP.then(([[badge, chgBadge], cowBadge]) => {
     for (const a of nav.children) {
       const k = a.getAttribute('href').slice(2);
-      if (k === 'notices' && badge) a.append(h('span', { class: 'badge' }, badge)); else if (k === 'cows' && cowBadge) a.append(h('span', { class: 'badge cow' }, cowBadge));
+      if (k === 'notices') { // no-milk today in the usual colour, change-milk requests waiting in blue
+        if (badge) a.append(h('span', { class: 'badge', title: 'No milk today' }, badge));
+        if (chgBadge) a.append(h('span', { class: 'badge chg', title: 'Change milk requests waiting' }, chgBadge));
+      } else if (k === 'cows' && cowBadge) a.append(h('span', { class: 'badge cow' }, cowBadge));
     }
   });
   try { S.lists = S.lists || (admin ? await api('lists') : {}); await (pages[page] || pages.dashboard)(v, arg); }

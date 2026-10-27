@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS login_fails(ip TEXT PRIMARY KEY, n INTEGER, until INT
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, unit TEXT DEFAULT 'Nos', price REAL DEFAULT 0, stock REAL DEFAULT 0, active INTEGER DEFAULT 1);
 CREATE TABLE IF NOT EXISTS customer_plans(customer_id TEXT, from_date TEXT, am REAL DEFAULT 0, pm REAL DEFAULT 0, price REAL DEFAULT 0, status TEXT DEFAULT 'Active', PRIMARY KEY(customer_id, from_date));
+CREATE TABLE IF NOT EXISTS qty_requests(id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id TEXT, date TEXT, session TEXT, qty REAL, note TEXT DEFAULT '', status TEXT DEFAULT 'Pending', created TEXT, decided TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS product_orders(id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, customer_id TEXT, qty REAL, price REAL, date TEXT, status TEXT DEFAULT 'Booked', note TEXT DEFAULT '', created TEXT, created_by TEXT);
 `;
 
@@ -267,8 +268,14 @@ route('GET', '/api/milk-summary', async ({ q }) => {
   const y = new Map(yields.map((r) => [r.date, r]));
   return sold.flat().filter((d) => d.date >= from && d.date <= to).map((d) => {
     const r = y.get(d.date) || { am: 0, pm: 0 }, yt = r2(r.am + r.pm);
-    return { date: d.date, yield_am: r2(r.am), yield_pm: r2(r.pm), yield: yt, sold_am: d.am, sold_pm: d.pm, sold: d.total, left: r2(yt - d.total) };
+    return { date: d.date, yield_am: r2(r.am), yield_pm: r2(r.pm), yield: yt, sold_am: d.am, sold_pm: d.pm, sold: d.total, left: r2(yt - d.total), amount: d.sales };
   });
+});
+// payments received on the days from..to (by payment date, whatever bill month they were for)
+route('GET', '/api/collections', async ({ q }) => {
+  const from = validDate(q.from), to = validDate(q.to);
+  need(from <= to, 'From date must be before To date');
+  return all('SELECT p.id, p.date, p.customer_id, c.name, p.bill_month, p.amount, p.mode FROM payments p LEFT JOIN customers c ON c.id=p.customer_id WHERE p.date>=? AND p.date<=? ORDER BY p.date, p.id', [from, to]);
 });
 route('GET', '/api/pnl', ({ q }) => pnl(validMonth(q.month)));
 route('GET', '/api/daily', ({ q }) => daily(validMonth(q.month)));
@@ -370,7 +377,7 @@ route('GET', '/api/export', async ({ user }) => {
   const out = {};
   for (const [key, sql] of [['Customers', 'SELECT * FROM customers ORDER BY id'], ['Customer Changes', 'SELECT * FROM customer_plans ORDER BY customer_id, from_date'],['Deliveries', 'SELECT * FROM deliveries ORDER BY date, customer_id, session'], ['Payments', 'SELECT * FROM payments ORDER BY date, id'],
     ['Income', 'SELECT * FROM income ORDER BY date, id'], ['Expenses', 'SELECT * FROM expenses ORDER BY date, id'], ['Cows', 'SELECT * FROM cows ORDER BY id'], ['Cow Yield', 'SELECT * FROM cow_yield ORDER BY date, cow_id'],
-    ['Extra Items', 'SELECT * FROM products ORDER BY id'], ['Extra Bookings', 'SELECT * FROM product_orders ORDER BY id'], ['Cow AI', 'SELECT * FROM cow_ai ORDER BY id'], ['Pauses', 'SELECT * FROM skips ORDER BY id'], ['Milk Unavailable', 'SELECT * FROM milk_unavailable ORDER BY date, customer_id']]) out[key] = await all(sql);
+    ['Extra Items', 'SELECT * FROM products ORDER BY id'], ['Extra Bookings', 'SELECT * FROM product_orders ORDER BY id'], ['Cow AI', 'SELECT * FROM cow_ai ORDER BY id'], ['Pauses', 'SELECT * FROM skips ORDER BY id'], ['Milk Unavailable', 'SELECT * FROM milk_unavailable ORDER BY date, customer_id'], ['Quantity Requests', 'SELECT * FROM qty_requests ORDER BY id']]) out[key] = await all(sql);
   return out;
 });
 
@@ -493,10 +500,33 @@ async function cancelSkip(k) {
 }
 const skipRow = (k) => ({ id: k.id, customer_id: k.customer_id, name: k.name, session: k.session, from: k.from_date, to: k.to_date, note: k.note, created_by: k.created_by });
 
-// Delivery staff and admin: everything that is running now or coming up
-route('GET', '/api/notices', async () => {
+// Delivery staff and admin: everything that is running now or coming up (quantity change requests wait for the admin only)
+route('GET', '/api/notices', async ({ user }) => {
   const rows = await all("SELECT k.*, c.name FROM skips k JOIN customers c ON c.id=k.customer_id WHERE k.status='active' AND k.to_date >= ? ORDER BY k.from_date, c.id", [today()]);
-  return { today: today(), tomorrow: tomorrow(), items: rows.map(skipRow) };
+  const requests = user.role === 'admin' ? await qtyRequests("r.status='Pending'") : [];
+  return { today: today(), tomorrow: tomorrow(), items: rows.map(skipRow), requests };
+});
+// customer asks for more or less milk on one delivery; the usual quantity for that day comes along so the admin sees the change
+async function qtyRequests(where, args = []) {
+  await expireQtyRequests();
+  const [rows, plans] = await Promise.all([all(`SELECT r.*, c.name, c.am c_am, c.pm c_pm, c.price, c.status c_status FROM qty_requests r JOIN customers c ON c.id=r.customer_id WHERE ${where} ORDER BY r.date, r.id`, args), plansOf()]);
+  return rows.map((r) => ({ id: r.id, customer_id: r.customer_id, name: r.name, date: r.date, session: r.session, qty: r.qty, note: r.note, status: r.status,
+    usual: defQty(planOn({ id: r.customer_id, am: r.c_am, pm: r.c_pm, price: r.price, status: r.c_status }, plans.get(r.customer_id), r.date), r.session) }));
+}
+// customers may also correct a past day, so a request only expires once its day has passed AND nobody answered it for a week
+const QTY_REQUEST_DAYS = 7;
+const expireQtyRequests = () => run("UPDATE qty_requests SET status='Expired', decided=? WHERE status='Pending' AND date<? AND created<?",
+  [new Date().toISOString(), today(), new Date(Date.now() - QTY_REQUEST_DAYS * 864e5).toISOString()]);
+// accepting writes the day's quantity, so the delivery list and both bills follow it
+route('PUT', '/api/qty-requests/(\\d+)', async ({ m, body }) => {
+  await expireQtyRequests();
+  const r = await get('SELECT * FROM qty_requests WHERE id=?', [m[1]]);
+  need(r && r.status !== 'Expired', `Nobody answered this request within ${QTY_REQUEST_DAYS} days, so it expired`);
+  need(r.status === 'Pending', 'That request was already handled');
+  need(['Accepted', 'Rejected'].includes(body.status), 'status must be Accepted or Rejected');
+  if (body.status === 'Accepted') await run('INSERT OR REPLACE INTO deliveries(date,customer_id,session,qty) VALUES(?,?,?,?)', [r.date, r.customer_id, r.session, r.qty]);
+  await run('UPDATE qty_requests SET status=?, decided=? WHERE id=?', [body.status, new Date().toISOString(), r.id]);
+  return { ok: true };
 });
 route('POST', '/api/skips', async ({ body }) => { // admin records a request taken by phone
   need(await exists('customers', body.customer_id), 'unknown customer');
@@ -677,6 +707,20 @@ route('POST', '/api/portal/skips', async ({ body, user }) => {
   need(['AM', 'PM', 'BOTH'].includes(body.session), 'Choose morning, evening or both');
   const r = await run('INSERT INTO skips(customer_id,from_date,to_date,session,note,created,created_by) VALUES(?,?,?,?,?,?,?)', [user.cid, body.from, body.to, body.session, String(body.note || '').slice(0, 200), new Date().toISOString(), 'customer']);
   return { id: r.id };
+});
+route('GET', '/api/portal/qty-requests', async ({ user }) => (await qtyRequests('r.customer_id=? AND r.date>=?', [user.cid, addDays(today(), -30)])).map(({ name, ...r }) => r)); // the admin's nickname stays private
+route('POST', '/api/portal/qty-requests', async ({ body, user }) => {
+  validDate(body.date);
+  need(['AM', 'PM'].includes(body.session), 'Choose morning or evening');
+  const qty = num(body.qty, 'quantity'); need(qty > 0 && qty <= 50, 'Enter the litres you want (for no milk, use the No milk tab)');
+  await run("UPDATE qty_requests SET status='Cancelled' WHERE customer_id=? AND date=? AND session=? AND status='Pending'", [user.cid, body.date, body.session]); // the newest ask replaces an older one
+  const r = await run('INSERT INTO qty_requests(customer_id,date,session,qty,note,created) VALUES(?,?,?,?,?,?)', [user.cid, body.date, body.session, qty, String(body.note || '').slice(0, 200), new Date().toISOString()]);
+  return { id: r.id };
+});
+route('DELETE', '/api/portal/qty-requests/(\\d+)', async ({ m, user }) => {
+  const r = await get('SELECT * FROM qty_requests WHERE id=? AND customer_id=?', [m[1], user.cid]);
+  need(r && r.status === 'Pending', 'Only a request that is still waiting can be cancelled');
+  await run("UPDATE qty_requests SET status='Cancelled' WHERE id=?", [r.id]); return { ok: true };
 });
 route('DELETE', '/api/portal/skips/(\\d+)', async ({ m, user }) => {
   const k = await get('SELECT * FROM skips WHERE id=? AND customer_id=?', [m[1], user.cid]);
