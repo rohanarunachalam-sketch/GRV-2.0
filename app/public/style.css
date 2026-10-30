@@ -160,21 +160,11 @@ dialog h1{font-size:20px;margin-bottom:14px}
 @keyframes cowsway{0%,100%{transform:rotate(-5deg)}50%{transform:rotate(5deg)}}
 @keyframes cowtear{0%{transform:translateY(0);opacity:0}15%{opacity:1}80%{opacity:1}100%{transform:translateY(22px);opacity:0}}
 @media (prefers-reduced-motion:reduce){.cow-head,.cow-tear{animation:none}}
-/* Change milk pop-up: drops fall into the bucket (more) or rise back into the cow (less), and the bucket fills or empties */
-.milk-cow{display:flex;justify-content:center;margin-bottom:8px}.milk-cow svg{border-radius:16px;max-width:100%;height:auto}
-.mc-drop{animation:mcdrip 1.1s linear infinite}.mc-drop.d2{animation-delay:-.37s}.mc-drop.d3{animation-delay:-.74s}
-.mc-milk{transform-box:fill-box;transform-origin:50% 100%;animation:mcfill 3.5s ease-in-out forwards}
-.milk-cow.less .mc-drop,.milk-cow.less .mc-milk{animation-direction:reverse}
-.milk-cow.more .mc-cow{animation:mchop .9s ease-in-out infinite}
-.milk-cow.less .mc-head{transform-box:view-box;transform-origin:180px 60px;animation:cowsway 2.4s ease-in-out infinite}
-@keyframes mcdrip{0%{transform:translateY(0);opacity:0}20%{opacity:1}80%{opacity:1}100%{transform:translateY(18px);opacity:0}}
-@keyframes mcfill{from{transform:scaleY(.25)}to{transform:scaleY(1)}}
-@keyframes mchop{0%,100%{transform:none}50%{transform:translateY(-3px)}}
 .form label{display:block;margin:0 0 14px;font-size:12.5px;font-weight:600;color:#46544b}
 .form input,.form select,.form textarea{display:block;width:100%;margin-top:6px;color:var(--ink);font-weight:400}
 .form .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:20px;padding-top:16px;border-top:1px solid var(--line);flex-wrap:wrap}
 .form.card{max-width:520px}
-/* round-button choices (customer No milk / Change milk): every option always visible, red box when nothing is picked */
+/* round-button choices (customer No milk): every option always visible, red box when nothing is picked */
 .choices{border:2px solid transparent;border-radius:12px;margin:0 0 14px;padding:4px 6px 6px;display:flex;flex-direction:column;gap:8px}
 .choices legend{font-size:12.5px;font-weight:600;color:#46544b;padding:0 2px}
 .form .choice{display:flex;align-items:center;gap:12px;margin:0;padding:12px 14px;border:1.5px solid var(--line);border-radius:10px;background:#fff;font-size:16px;font-weight:600;color:var(--ink);cursor:pointer}
@@ -184,7 +174,6 @@ dialog h1{font-size:20px;margin-bottom:14px}
 .choices.missing{border-color:var(--bad);background:var(--bad-l);animation:shake .4s}
 .choices.missing .choice{border-color:#f2c9c4}
 .choices.missing .miss-msg{display:block}
-.form input.missing{border:2px solid var(--bad);background:var(--bad-l);animation:shake .4s}
 @keyframes shake{0%,100%{transform:none}25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
 #toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%) translateY(12px);background:var(--ink);color:#fff;padding:11px 20px;border-radius:12px;opacity:0;transition:all .22s var(--ease);pointer-events:none;z-index:60;font-weight:600;font-size:14px;box-shadow:var(--shadow-lg)}
 #toast.show{opacity:1;transform:translateX(-50%)}#toast.err{background:var(--bad)}

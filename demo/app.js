@@ -802,8 +802,6 @@ function choices(title, opts) {
   };
   return box;
 }
-// red box around an empty or wrong number field until it is fixed
-const markMissing = (input, msg) => { input.classList.add('missing'); input.addEventListener('input', () => input.classList.remove('missing'), { once: true }); input.focus(); toast(msg, true); };
 const P = { month: null, tab: 'bill' };
 pages.portal = async (v) => {
   const d = await api('portal' + (P.month ? '?month=' + P.month : ''));
@@ -815,7 +813,7 @@ pages.portal = async (v) => {
       h('label', {}, 'Your name', i), h('button', { class: 'pri', type: 'submit' }, 'Save name'));
   };
   const again = () => { v.innerHTML = ''; pages.portal(v).catch((e) => v.append(h('p', { class: 'bad' }, e.message))); };
-  const tabs = h('div', { class: 'seg' }, [['bill', 'My bill'], ['skip', 'No milk'], ['change', 'Change milk'], ['shop', 'GRV Shop'], ['account', 'Account']].map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
+  const tabs = h('div', { class: 'seg' }, [['bill', 'My bill'], ['skip', 'No milk'], ['shop', 'GRV Shop'], ['account', 'Account']].map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
   v.append(h('div', { class: 'who-card' }, h('div', { class: 'avatar' }, (d.customer.name || d.customer.id).trim()[0]?.toUpperCase() || '?'), h('div', {}, h('h1', {}, d.customer.name || 'Welcome'), h('div', { class: 'tag' }, `Customer ${d.customer.id}`))), d.needs_name ? nameForm(true) : null, h('div', { class: 'bar' }, tabs));
 
   if (P.tab === 'bill') {
@@ -905,80 +903,6 @@ pages.portal = async (v) => {
       h('h2', {}, 'Your requests'),
       d.skips.length ? h('div', { class: 'cards-list' }, d.skips.map((k) => h('div', { class: 'rcard' }, h('div', { class: 'rname' }, k.from === k.to ? dayLabel(k.from) : `${dayLabel(k.from)} → ${dayLabel(k.to)}`), h('div', { class: 'tag' }, { AM: 'Morning', PM: 'Evening', BOTH: 'Morning & Evening' }[k.session] + (k.note ? ' · ' + k.note : '')),
         h('div', { class: 'ract' }, h('button', { class: 'abs', onclick: guard(async () => { if (!confirm(k.from <= d.today ? 'Start getting milk again from today?' : 'Cancel this request?')) return; await api('portal/skips/' + k.id, 'DELETE'); toast('Done'); again(); }) }, k.from <= d.today ? 'Resume milk from today' : 'Cancel'))))) : h('p', { class: 'mute' }, 'No active requests.'));
-  } else if (P.tab === 'change') {
-    // more or less milk on one delivery; the admin accepts it, then the delivery list and bill use the new quantity
-    const reqs = await api('portal/qty-requests');
-    const usual = (s) => (s === 'AM' ? d.customer.am : d.customer.pm);
-    const dt = h('input', { type: 'date', value: d.tomorrow, required: true }); // any day: past days can be corrected too
-    const ses = choices('Which delivery', [['AM', '🌅 Morning'], ['PM', '🌇 Evening']]);
-    const qty = h('input', { type: 'number', min: 0.25, step: 'any', inputmode: 'decimal', placeholder: 'Litres' });
-    const note = h('input', { type: 'text', placeholder: 'Optional note (e.g. guests at home)', maxlength: 200 });
-    const hint = h('p', { class: 'tag' }, 'Choose morning or evening to see your usual quantity.');
-    const showHint = () => {
-      if (!ses.value) return;
-      const u = usual(ses.value), q = Number(qty.value);
-      hint.textContent = `Usually you get ${lit(u)} L in the ${ses.value === 'AM' ? 'morning' : 'evening'}.` + (qty.value && q > 0 ? (q > u ? ` ↑ ${lit(q - u)} L more` : q < u ? ` ↓ ${lit(u - q)} L less` : ' Same as usual.') : '');
-    };
-    ses.addEventListener('change', showHint); qty.addEventListener('input', showHint);
-    const SES = { AM: 'Morning', PM: 'Evening' };
-    // pop-up after sending: for more milk the cow drips extra milk into the bucket; for less, the drops float back up into the cow
-    const MILK_COW = (diff) => `<svg viewBox="0 0 220 170" width="250" height="193">
-      <rect width="220" height="170" fill="#e3f1fb"/><rect y="148" width="220" height="22" fill="#cfe8c4"/>
-      <g class="mc-cow">
-        <path d="M40 54 q-18 6 -16 38" fill="none" stroke="#3a2a20" stroke-width="3" stroke-linecap="round"/><ellipse cx="24" cy="94" rx="4" ry="6" fill="#3a2a20"/>
-        <g fill="#fff" stroke="#3a2a20" stroke-width="2"><rect x="50" y="78" width="11" height="68" rx="4"/><rect x="66" y="78" width="11" height="68" rx="4"/><rect x="128" y="78" width="11" height="68" rx="4"/><rect x="144" y="78" width="11" height="68" rx="4"/></g>
-        <g fill="#3a2a20"><rect x="50" y="140" width="11" height="6" rx="2"/><rect x="66" y="140" width="11" height="6" rx="2"/><rect x="128" y="140" width="11" height="6" rx="2"/><rect x="144" y="140" width="11" height="6" rx="2"/></g>
-        <rect x="36" y="34" width="128" height="58" rx="28" fill="#fff" stroke="#3a2a20" stroke-width="2.5"/>
-        <path d="M60 36 q14 -4 20 8 q-4 14 -18 12 q-10 -6 -2 -20z M112 60 q14 -6 22 4 q0 14 -14 14 q-12 -2 -8 -18z" fill="#3a2a20"/>
-        <path d="M86 90 q15 20 30 0z" fill="#f6b8c0" stroke="#3a2a20" stroke-width="2"/>
-        <g fill="#f6b8c0" stroke="#3a2a20" stroke-width="1.2"><rect x="93" y="100" width="4.5" height="9" rx="2"/><rect x="104.5" y="100" width="4.5" height="9" rx="2"/></g>
-        <g class="mc-head">
-          <path d="M166 22 q-4 -10 2 -14 q0 8 6 10z M194 22 q4 -10 -2 -14 q0 8 -6 10z" fill="#efe2c4" stroke="#3a2a20" stroke-width="1.5"/>
-          <ellipse cx="160" cy="34" rx="11" ry="6" transform="rotate(-25 160 34)" fill="#f3e6d8" stroke="#3a2a20" stroke-width="2"/>
-          <ellipse cx="200" cy="34" rx="11" ry="6" transform="rotate(25 200 34)" fill="#f3e6d8" stroke="#3a2a20" stroke-width="2"/>
-          <ellipse cx="180" cy="44" rx="20" ry="24" fill="#fff" stroke="#3a2a20" stroke-width="2.5"/>
-          <circle cx="172" cy="38" r="2.8" fill="#3a2a20"/><circle cx="188" cy="38" r="2.8" fill="#3a2a20"/>
-          <ellipse cx="180" cy="58" rx="14" ry="10" fill="#f6b8c0" stroke="#3a2a20" stroke-width="2"/>
-          <circle cx="175" cy="56" r="1.8" fill="#3a2a20"/><circle cx="185" cy="56" r="1.8" fill="#3a2a20"/>
-          ${diff > 0 ? '<path d="M173 62 q7 5 14 0" fill="none" stroke="#3a2a20" stroke-width="2" stroke-linecap="round"/>' : '<ellipse cx="180" cy="64" rx="3" ry="2.5" fill="#3a2a20"/>'}
-        </g>
-      </g>
-      <g fill="#fff" stroke="#5f8db3" stroke-width="1.4"><ellipse class="mc-drop" cx="95.2" cy="113" rx="3.2" ry="4.4"/><ellipse class="mc-drop d2" cx="106.7" cy="113" rx="3.2" ry="4.4"/><ellipse class="mc-drop d3" cx="101" cy="113" rx="3.2" ry="4.4"/></g>
-      <clipPath id="mc-bucket"><path d="M83 129 h38 l-4.6 21 h-28.8z"/></clipPath>
-      <path d="M80 127 h44 l-5 25 h-34z" fill="#b8c4cc" stroke="#3a2a20" stroke-width="2" stroke-linejoin="round"/>
-      <rect class="mc-milk" x="80" y="129" width="44" height="21" fill="#fffdf6" clip-path="url(#mc-bucket)"/>
-      <text x="14" y="26" font-size="17" font-weight="700" fill="${diff > 0 ? '#1c7a44' : '#b42318'}">${diff > 0 ? '+' : '−'}${lit(Math.abs(diff))} L</text>
-    </svg>`;
-    const milkCowPop = (date, s, q, u) => {
-      const diff = Math.round((q - u) * 100) / 100;
-      if (!diff) return toast('Request sent to the admin');
-      const more = diff > 0;
-      const dlg = $('#dlg'); dlg.innerHTML = '';
-      const cow = h('div', { class: 'milk-cow ' + (more ? 'more' : 'less'), 'aria-hidden': 'true' });
-      cow.innerHTML = MILK_COW(diff);
-      dlg.append(h('form', { class: 'form funny', method: 'dialog' }, cow,
-        h('h1', {}, `${more ? 'Extra milk' : 'Less milk'} — ${dayLabel(date)} ${SES[s].toLowerCase()}`),
-        h('p', {}, more ? 'Moo! The cow is giving extra milk just for you! 🐄🥛' : 'Oops! The cow is drinking the extra milk back! 😄🐄'),
-        h('p', { lang: 'ta' }, more ? 'ம்ம்மா! உங்களுக்காக பசு கூடுதல் பால் தருது! 🐄🥛' : 'அச்சச்சோ! பசு கூடுதல் பாலை திரும்ப குடிச்சிடுச்சு! 😄🐄'),
-        h('p', { class: 'tag' }, `You asked for ${lit(q)} L (usually ${lit(u)} L). Your bill changes once the admin accepts.`),
-        h('div', { class: 'acts' }, h('button', { class: 'pri', type: 'submit' }, 'OK 👍'))));
-      dlg.showModal();
-    };
-    const change = (r) => (r.qty > r.usual ? `↑ ${lit(r.qty - r.usual)} L more` : r.qty < r.usual ? `↓ ${lit(r.usual - r.qty)} L less` : 'same as usual');
-    v.append(h('form', { class: 'form card', onsubmit: guard(async (e) => {
-      e.preventDefault();
-      if (!ses.need()) return;
-      if (!(Number(qty.value) > 0)) return markMissing(qty, 'Enter the litres you want');
-      await api('portal/qty-requests', 'POST', { date: dt.value, session: ses.value, qty: qty.value, note: note.value });
-      milkCowPop(dt.value, ses.value, Number(qty.value), usual(ses.value)); again();
-    }) },
-      h('h2', { style: 'margin-top:0' }, 'Need more or less milk?'), h('p', { class: 'tag' }, 'Pick the day and delivery, and how many litres you want. The admin will accept it, and your bill changes automatically.'),
-      h('label', {}, 'Date', dt), ses, h('label', {}, 'Litres you want', qty), hint, h('label', {}, 'Note', note), h('button', { class: 'pri', type: 'submit' }, 'Send request')),
-      h('h2', {}, 'Your change requests'),
-      reqs.length ? h('div', { class: 'cards-list' }, reqs.slice().reverse().map((r) => h('div', { class: 'rcard' }, h('div', { class: 'rname' }, `${dayLabel(r.date)} · ${SES[r.session]}`),
-        h('div', { class: 'tag' }, `${lit(r.qty)} L (${change(r)})` + (r.note ? ' · ' + r.note : '')), h('div', { style: 'margin-top:6px' }, pill(r.status === 'Pending' ? 'Waiting' : r.status)),
-        r.status === 'Pending' ? h('div', { class: 'ract' }, h('button', { class: 'abs', onclick: guard(async () => { if (!confirm('Cancel this request?')) return; await api('portal/qty-requests/' + r.id, 'DELETE'); toast('Cancelled'); again(); }) }, 'Cancel')) : null)))
-        : h('p', { class: 'mute' }, 'No requests yet.'));
   } else {
     const o = h('input', { type: 'password', autocomplete: 'current-password', required: true }), n1 = h('input', { type: 'password', autocomplete: 'new-password', minlength: 6, required: true }), n2 = h('input', { type: 'password', autocomplete: 'new-password', minlength: 6, required: true });
     v.append(nameForm(false), h('form', { class: 'form card', style: 'margin-top:12px', onsubmit: guard(async (e) => { e.preventDefault(); if (n1.value !== n2.value) return toast('New passwords do not match', true); await api('portal/password', 'PUT', { old: o.value, password: n1.value }); toast('Password changed'); again(); }) },
