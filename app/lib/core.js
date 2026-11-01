@@ -258,6 +258,12 @@ route('PUT', '/api/lists', async ({ body }) => {
   }
   return lists();
 });
+route('PUT', '/api/nav-order', async ({ body }) => { // the admin menu order picked in Settings; [] means the default order
+  need(Array.isArray(body.order), 'order must be a list');
+  const order = [...new Set(body.order.map(String))].slice(0, 50);
+  await setSetting('nav_order', order);
+  return { order };
+});
 route('GET', '/api/dashboard', ({ q }) => dashboard(validMonth(q.month)));
 // milk yield vs sold for each day from..to (at most a year), for the dashboard summary and its Excel download
 route('GET', '/api/milk-summary', async ({ q }) => {
@@ -359,6 +365,7 @@ route('GET', '/api/route', async ({ q, user }) => {
 route('GET', '/api/me', async ({ user }) => {
   const me = { role: user.role, today: today(), yesterday: yesterday() };
   if (user.role === 'customer') { const c = await get('SELECT id, bill_name FROM customers WHERE id=?', [user.cid]); Object.assign(me, { cid: user.cid, name: c && c.bill_name }); }
+  if (user.role === 'admin') me.nav_order = await getSetting('nav_order', []);
   return me;
 });
 route('POST', '/api/logout', async ({ user }) => { await run('DELETE FROM sessions WHERE token=?', [user.token]); return { ok: true, clear: true }; });

@@ -21,7 +21,10 @@ const dayLabel = (d) => new Date(d + 'T00:00').toLocaleDateString('en-IN', { wee
 let appVer = null, updateReady = false;
 const typing = () => { const a = document.activeElement; return !!a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName) && a.value !== ''; };
 const reloadIfUpdated = () => { if (updateReady && !typing()) { location.reload(); return true; } return false; };
-const checkForUpdate = () => api('me').catch(() => {}).then(reloadIfUpdated);
+// customers see the new day by themselves too (date-based greetings, yesterday added to the bill)
+let shownDay = today();
+const refreshIfNewDay = () => { if (today() === shownDay || typing()) return; shownDay = today(); if (!S.user || S.user.role === 'customer') render(); };
+const checkForUpdate = () => api('me').catch(() => {}).then(() => reloadIfUpdated() || refreshIfNewDay());
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForUpdate(); }); // back to the app from another app or tab
 setInterval(() => { if (document.visibilityState === 'visible') checkForUpdate(); }, 5 * 60 * 1000);
 
@@ -615,11 +618,30 @@ pages.pnl = async (v) => {
       h('div', {}, h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Expenses by category'), breakdown(p.by_category, 'category')), h('div', { class: 'card', style: 'margin-top:12px' }, h('h2', { style: 'margin-top:0' }, 'Other income by type'), breakdown(p.by_type, 'type')))));
 };
 
+let navSaveT;
+function navOrderEditor() {
+  const list = h('div', {});
+  const setOrder = (order) => {
+    S.user.nav_order = order; paint();
+    const nav = $('#nav');
+    for (const [k] of navInOrder()) { const a = nav.querySelector(`a[href="#/${k}"]`); if (a) nav.append(a); } // moved, not rebuilt, so the red count bubbles stay
+    clearTimeout(navSaveT); navSaveT = setTimeout(guard(() => api('nav-order', 'PUT', { order })), 400); // a few quick taps save once
+  };
+  const move = (from, to) => { const order = navInOrder().map(([k]) => k); order.splice(to, 0, order.splice(from, 1)[0]); setOrder(order); };
+  const paint = () => list.replaceChildren(...navInOrder().map(([, l], i, items) => h('div', { class: 'navorder' }, h('span', { class: 'grow' }, l),
+    h('button', { class: 'link', disabled: i === 0, 'aria-label': `Move ${l} to the top`, onclick: () => move(i, 0) }, 'Top'),
+    h('button', { disabled: i === 0, 'aria-label': `Move ${l} up`, onclick: () => move(i, i - 1) }, '▲'),
+    h('button', { disabled: i === items.length - 1, 'aria-label': `Move ${l} down`, onclick: () => move(i, i + 1) }, '▼'))));
+  paint();
+  return h('div', { class: 'card' }, list, h('div', { class: 'bar', style: 'margin:12px 0 0' }, h('button', { onclick: () => { setOrder([]); toast('Menu reset to default'); } }, 'Reset to default')));
+}
+
 pages.settings = async (v) => {
   const L = await api('lists');
   const areas = {};
   const mk = (k, label) => { areas[k] = h('textarea', { rows: 10 }); areas[k].value = L[k].join('\n'); return h('label', { class: 'card', style: 'display:block' }, h('b', {}, label), h('div', { class: 'tag' }, 'One per line'), areas[k]); };
-  v.append(h('h1', {}, 'Settings'), h('p', { class: 'sub' }, 'Dropdown lists used in Payments, Income and Expenses. Data is stored in app/data/grv.db.'),
+  v.append(h('h1', {}, 'Settings'), h('h2', {}, 'Rearrange menu'), h('p', { class: 'sub' }, 'Sets the order of the bottom bar on phones and the side menu on computers. Saved to the admin account, so it follows you to other devices.'), navOrderEditor(),
+    h('h2', {}, 'Dropdown lists'), h('p', { class: 'sub' }, 'Dropdown lists used in Payments, Income and Expenses. Data is stored in app/data/grv.db.'),
     h('div', { class: 'grid2' }, mk('modes', 'Payment modes'), mk('expense_categories', 'Expense categories'), mk('income_types', 'Income types')),
     h('div', { class: 'bar', style: 'margin-top:12px' }, h('button', { class: 'pri', onclick: guard(async () => {
       const body = {}; for (const k in areas) body[k] = areas[k].value.split('\n'); await api('lists', 'PUT', body); toast('Settings saved');
@@ -803,6 +825,44 @@ function choices(title, opts) {
   return box;
 }
 const P = { month: null, tab: 'bill' };
+// ---------- Diwali greeting: customers only, shows by itself between these dates, then the pages go back to normal ----------
+const DIWALI = { from: '2026-11-01', day: '2026-11-08', to: '2026-11-09' };
+const isDiwali = () => today() >= DIWALI.from && today() <= DIWALI.to;
+const diwaliDaysLeft = () => (Date.parse(DIWALI.day) - Date.parse(today())) / 864e5;
+// before the day: a countdown; on the day: the wishes; the day after: thanks
+const diwaliWords = () => {
+  const n = diwaliDaysLeft();
+  if (n > 0) return { title: 'Diwali is coming!', ta: 'தீபாவளி வருகிறது!', count: `${n} ${n === 1 ? 'day' : 'days'} to go · இன்னும் ${n} ${n === 1 ? 'நாள்' : 'நாட்கள்'}`,
+    msg: 'The festival of lights is almost here. Have your milk, ghee and sweets ready with GRV Dairy.', msgTa: 'ஒளியின் திருநாள் நெருங்கிவிட்டது.' };
+  if (n === 0) return { title: 'Happy Diwali!', ta: 'இனிய தீபாவளி நல்வாழ்த்துகள்!',
+    msg: 'May your home shine with light, joy and sweetness. Thank you for being part of the GRV Dairy family.', msgTa: 'உங்கள் இல்லம் ஒளியும் மகிழ்ச்சியும் இனிமையும் நிறைந்து விளங்கட்டும்.' };
+  return { title: 'Hope you had a wonderful Diwali!', ta: 'தீபாவளி மகிழ்ச்சியாக அமைந்திருக்கும் என நம்புகிறோம்!', small: true,
+    msg: 'Thank you for celebrating with GRV Dairy.', msgTa: 'எங்களுடன் கொண்டாடியதற்கு நன்றி.' };
+};
+const DIYA = `<svg class="dw-diya" viewBox="0 0 64 64" aria-hidden="true">
+  <g class="dw-flame"><path d="M32 4c8 11 11 16 11 22a11 11 0 0 1-22 0c0-6 3-11 11-22z" fill="#ffb020"/><path d="M32 16c4 6 6 9 6 12a6 6 0 0 1-12 0c0-3 2-6 6-12z" fill="#fff1a8"/></g>
+  <ellipse cx="32" cy="39" rx="27" ry="5" fill="#f2b544"/><path d="M5 39c2 12 13 20 27 20s25-8 27-20c-6 4-16 5-27 5s-21-1-27-5z" fill="#c8501e"/></svg>`;
+function diwaliPoster() {
+  const rangoli = h('div', { class: 'dw-rangoli' });
+  rangoli.innerHTML = `<svg viewBox="-50 -50 100 100" aria-hidden="true">${Array.from({ length: 12 }, (_, i) => `<g transform="rotate(${i * 30})"><path d="M0 -10C7 -20 7 -32 0 -46C-7 -32 -7 -20 0 -10z" fill="none" stroke="#f2b544" stroke-width="1"/><circle cy="-40" r="1.6" fill="#ff8a3d"/></g>`).join('')}<circle r="7" fill="none" stroke="#f2b544" stroke-width="1"/></svg>`;
+  const diyas = h('div', { class: 'dw-diyas' }); diyas.innerHTML = DIYA + DIYA + DIYA;
+  const w = diwaliWords();
+  return h('section', { class: 'diwali-poster', 'aria-label': w.title + ' From GRV Dairy' }, rangoli,
+    Array.from({ length: 10 }, (_, i) => h('i', { class: 'dw-star', style: `left:${6 + i * 9.6}%;top:${8 + ((i * 37) % 70)}%;animation-delay:${(i * 0.37).toFixed(2)}s` })),
+    h('div', { class: 'dw-title' + (w.small ? ' small' : '') }, w.title), h('div', { class: 'dw-tamil' }, w.ta), w.count ? h('div', { class: 'dw-count' }, w.count) : null, diyas,
+    h('p', { class: 'dw-msg' }, w.msg), h('p', { class: 'dw-msg ta' }, w.msgTa),
+    h('div', { class: 'dw-sign' }, h('img', { src: 'logo.png', alt: '' }), 'With love, GRV Dairy'));
+}
+// fireworks on the day and the day after, once per visit; they never block taps and clear themselves
+let diwaliSkyDay = null;
+function diwaliFireworks() {
+  if (diwaliDaysLeft() > 0 || diwaliSkyDay === today()) return;
+  diwaliSkyDay = today();
+  const colors = ['#ffb020', '#ff5d73', '#7be0a4', '#7cc4ff', '#fff1a8'];
+  const sky = h('div', { class: 'diwali-sky', 'aria-hidden': 'true' }, Array.from({ length: 9 }, (_, b) => h('div', { class: 'dw-burst', style: `left:${10 + Math.random() * 80}%;top:${8 + Math.random() * 50}%;--c:${colors[b % colors.length]}` },
+    Array.from({ length: 14 }, (_, i) => h('i', { style: `--a:${i * 360 / 14}deg;animation-delay:${(b * 0.55).toFixed(2)}s` })))));
+  document.body.append(sky); setTimeout(() => sky.remove(), 7000);
+}
 pages.portal = async (v) => {
   const d = await api('portal' + (P.month ? '?month=' + P.month : ''));
   P.month = d.month;
@@ -813,6 +873,7 @@ pages.portal = async (v) => {
       h('label', {}, 'Your name', i), h('button', { class: 'pri', type: 'submit' }, 'Save name'));
   };
   const again = () => { v.innerHTML = ''; pages.portal(v).catch((e) => v.append(h('p', { class: 'bad' }, e.message))); };
+  if (isDiwali()) { v.append(diwaliPoster()); diwaliFireworks(); }
   const tabs = h('div', { class: 'seg' }, [['bill', 'My bill'], ['skip', 'No milk'], ['shop', 'GRV Shop'], ['account', 'Account']].map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
   v.append(h('div', { class: 'who-card' }, h('div', { class: 'avatar' }, (d.customer.name || d.customer.id).trim()[0]?.toUpperCase() || '?'), h('div', {}, h('h1', {}, d.customer.name || 'Welcome'), h('div', { class: 'tag' }, `Customer ${d.customer.id}`))), d.needs_name ? nameForm(true) : null, h('div', { class: 'bar' }, tabs));
 
@@ -924,6 +985,8 @@ function monthCalendar(d) {
     h('div', { class: 'cal-key' }, h('span', { class: 'ok' }, 'Delivered'), h('span', { class: 'pause' }, 'Paused'), h('span', { class: 'out' }, 'Milk Unavailable')));
 }
 const NAV = [['dashboard', 'Dashboard'], ['delivery', 'Delivery'], ['notices', 'Notices'], ['daily', 'Daily Summary'], ['bills', 'Bills'], ['customers', 'Customers'], ['income', 'Income'], ['expenses', 'Expenses'], ['pnl', 'P&L'], ['cows', 'Cows'], ['yield', 'Cow Yield'], ['extras', 'Extras'], ['settings', 'Settings']];
+// the admin menu in the order picked in Settings; a page missing from the saved order keeps its default place at the end
+const navInOrder = () => { const saved = S.user.nav_order || []; return [...saved.map((k) => NAV.find((n) => n[0] === k)).filter(Boolean), ...NAV.filter((n) => !saved.includes(n[0]))]; };
 const DELIVERY_NAV = [['delivery', 'Deliveries'], ['notices', 'Notices']];
 const hdr = $('header');
 
@@ -942,10 +1005,11 @@ function showLogin() {
     await api('login', 'POST', { role: mode, id: id.value, password: pw.value });
     if (mode === 'customer') localStorage.setItem('grv.cid', id.value.trim().toUpperCase());
     S.lists = null; S.user = null; render();
-  }) }, h('img', { class: 'logo big', src: 'logo.png', alt: 'GRV Dairy' }), h('h1', { style: 'text-align:center;font-size:19px;margin-bottom:2px' }, title),
+  }) }, mode === 'customer' && isDiwali() ? diwaliPoster() : null, h('img', { class: 'logo big', src: 'logo.png', alt: 'GRV Dairy' }), h('h1', { style: 'text-align:center;font-size:19px;margin-bottom:2px' }, title),
     h('p', { class: 'tag' }, mode === 'customer' ? 'Fresh milk, delivered daily' : 'GRV Dairy staff'),
     mode === 'customer' ? h('label', {}, 'Customer ID', id) : null, h('label', {}, 'Password', pwBox(pw)), h('button', { class: 'pri', type: 'submit' }, 'Sign in'));
   v.append(form); (mode === 'customer' && !id.value ? id : pw).focus();
+  if (mode === 'customer' && isDiwali()) diwaliFireworks();
 }
 
 async function render() {
@@ -964,7 +1028,7 @@ async function render() {
   const badgeP = Promise.all([
     role !== 'customer' ? api('notices').then((n) => [n.items.filter((k) => k.from <= n.today).length, (n.requests || []).length], () => [0, 0]) : [0, 0],
     admin ? api('cow-alerts').then((a) => a.length, () => 0) : 0]);
-  const links = admin ? NAV : role === 'delivery' ? DELIVERY_NAV : [];
+  const links = admin ? navInOrder() : role === 'delivery' ? DELIVERY_NAV : [];
   for (const [k, l] of links) nav.append(h('a', { href: '#/' + k, class: k === page || (page === 'bill' && k === 'bills') ? 'on' : '' }, l));
   $('#menu').hidden = !links.length; $('.month').hidden = !admin;
   $('#who').textContent = { admin: 'Admin', delivery: 'Delivery', customer: S.user.cid }[role];
