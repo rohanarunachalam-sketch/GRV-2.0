@@ -500,3 +500,8 @@ button.run-big{min-height:52px;font-size:17px;border-radius:12px}
 @keyframes dw-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.diwali-sky{display:none}}
 @media print{.diwali-poster,.diwali-sky{display:none}}
+/* Location Tracker: drag handle for reordering */
+.drag-h{flex:none;width:30px;height:44px;display:grid;place-items:center;font-size:22px;color:var(--mute);cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;border-radius:8px}
+.drag-h:active{cursor:grabbing;background:var(--brand-l);color:var(--brand)}
+.loc-card.dragging{position:relative;z-index:5;box-shadow:0 14px 34px rgba(10,30,18,.28);border-color:var(--brand-m);transition:none;opacity:.97}
+.loc-list.cards-list{grid-template-columns:1fr;max-width:760px;user-select:none;-webkit-user-select:none}

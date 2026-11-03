@@ -55,6 +55,7 @@ const init = () => ready || (ready = (async () => {
   try { await client.execute('ALTER TABLE sessions ADD COLUMN cid TEXT'); } catch { /* already there */ }
   try { await client.execute('ALTER TABLE product_orders ADD COLUMN delivered_on TEXT'); } catch { /* already there */ }
   try { await client.execute("ALTER TABLE customers ADD COLUMN bill_name TEXT DEFAULT ''"); } catch { /* already there */ }
+  try { await client.execute('ALTER TABLE delivery_runs ADD COLUMN last_by TEXT'); } catch { /* already there */ }
   if ((await get('SELECT COUNT(*) n FROM users')).n === 0) {
     let creds = { admin: process.env.ADMIN_PASSWORD, delivery: process.env.DELIVERY_PASSWORD };
     if (!creds.admin || !creds.delivery) {
@@ -246,8 +247,8 @@ async function nextId(table, prefix, pad) {
 // ---- routing
 const routes = [];
 const route = (method, pattern, fn) => routes.push({ method, re: new RegExp('^' + pattern + '$'), fn });
-// delivery staff may also mark houses (Location Tracker) and start / pause / finish a delivery; the routes themselves stop them changing saved locations
-const deliveryExtra = (key) => key === 'GET /api/locations' || /^PUT \/api\/locations\/[^/]+$/.test(key) && key !== 'PUT /api/locations/order' || key === 'GET /api/run' || /^POST \/api\/run\/(start|pause|resume|end)$/.test(key);
+// delivery staff may also mark houses, set the delivery order (Location Tracker) and start / pause / finish a delivery; the routes themselves stop them changing saved locations
+const deliveryExtra = (key) => key === 'GET /api/locations' || /^PUT \/api\/locations\/[^/]+$/.test(key) || key === 'GET /api/run' || /^POST \/api\/run\/(start|pause|resume|end)$/.test(key);
 const DELIVERY_ALLOWED = new Set(['GET /api/me', 'POST /api/logout', 'GET /api/route', 'PUT /api/delivery', 'PUT /api/delivery/unavailable', 'GET /api/notices']);
 const roleAllows = (role, key) => role === 'admin' || (role === 'delivery' && (DELIVERY_ALLOWED.has(key) || deliveryExtra(key))) ||
   (role === 'customer' && (['GET /api/me', 'POST /api/logout'].includes(key) || key.split(' ')[1].startsWith('/api/portal')));
@@ -410,12 +411,13 @@ route('POST', '/api/run/(start|pause|resume|end)', async ({ m, body, user }) => 
   const d = today(), r = await runOf(d, body.session), now = Date.now();
   if (m[1] === 'start') {
     need(!r || r.ended, 'Delivery has already started');
-    await run('INSERT OR REPLACE INTO delivery_runs(date,session,started,paused_at,paused_ms,ended,started_by) VALUES(?,?,?,NULL,0,NULL,?)', [d, body.session, now, user.role]);
+    await run('INSERT OR REPLACE INTO delivery_runs(date,session,started,paused_at,paused_ms,ended,started_by,last_by) VALUES(?,?,?,NULL,0,NULL,?,?)', [d, body.session, now, user.role, user.role]);
   } else {
     need(r && !r.ended, 'Delivery has not started');
     if (m[1] === 'pause') { need(!r.paused_at, 'Already paused'); await run('UPDATE delivery_runs SET paused_at=? WHERE date=? AND session=?', [now, d, body.session]); }
     if (m[1] === 'resume') { need(r.paused_at, 'Not paused'); await run('UPDATE delivery_runs SET paused_ms=?, paused_at=NULL WHERE date=? AND session=?', [delayOf(r, now), d, body.session]); }
     if (m[1] === 'end') await run('UPDATE delivery_runs SET ended=?, paused_ms=?, paused_at=NULL WHERE date=? AND session=?', [now, delayOf(r, now), d, body.session]);
+    await run('UPDATE delivery_runs SET last_by=? WHERE date=? AND session=?', [user.role, d, body.session]); // shown on the other login: "Paused by delivery"
   }
   return runView(d, body.session);
 });

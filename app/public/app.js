@@ -270,7 +270,7 @@ async function routeView(v) {
     : h('input', { type: 'date', value: R.date, onchange: (e) => { if (e.target.value) { R.date = e.target.value; rerender(); } } });
   v.append(h('h1', {}, 'Deliveries'), h('p', { class: 'sub' }, `${dayLabel(R.date)} · ${R.session === 'AM' ? 'Morning' : 'Evening'}. Customers get their usual quantity unless you change it.`),
     staff ? null : h('div', { class: 'bar' }, viewTabs(() => { v.innerHTML = ''; pages.delivery(v); })),
-    R.date === S.user.today ? runControl(R.session) : null,
+    R.date === S.user.today || !staff ? runControl(R.session) : null, // admin always sees today's Start / Pause, whatever date the cards show
     h('div', { class: 'bar sticky' }, dateCtl, sessionSeg, search), h('div', { class: 'bar' }, prog), cardsBox);
   if (R.filter) for (const c of cardsBox.children) c.hidden = !c.dataset.name.includes(R.filter);
   if (!items.length) cardsBox.append(h('p', { class: 'mute' }, 'No customers for this session.'));
@@ -282,29 +282,43 @@ const clock = (ms) => new Date(ms).toLocaleTimeString('en-IN', { hour: 'numeric'
 function runControl(session) {
   const box = h('div', { class: 'run-box' });
   const name = session === 'AM' ? 'Morning' : 'Evening';
-  const act = (what, ask) => guard(async () => { if (ask && !confirm(ask)) return; paint(await api('run/' + what, 'POST', { session })); toast({ start: 'Delivery started — customers can now see their time', pause: 'Paused — customers’ times will move later', resume: 'Resumed — times updated', end: 'Delivery finished' }[what]); });
+  const who = (r) => (r.last_by ? ` by ${r.last_by === 'admin' ? 'Admin' : 'Delivery'}` : '');
+  // the same round is shared by admin and delivery: re-check every 10 s and when the phone wakes, so a Start / Pause on one login shows on the other
+  let timer = null;
+  const refresh = (first) => {
+    if (!first && !box.isConnected) { clearInterval(timer); document.removeEventListener('visibilitychange', onWake); return; }
+    api('run?session=' + session).then(paint, (e) => { if (first) box.textContent = e.message; });
+  };
+  const onWake = () => { if (document.visibilityState === 'visible') refresh(false); };
+  const act = (what, ask) => guard(async () => {
+    if (ask && !confirm(ask)) return;
+    try { paint(await api('run/' + what, 'POST', { session })); } catch (e) { refresh(false); throw e; } // someone on the other login may have pressed first
+    toast({ start: 'Delivery started — customers can now see their time', pause: 'Paused — customers’ times will move later', resume: 'Resumed — times updated', end: 'Delivery finished' }[what]); });
+  let last = '';
   const paint = (d) => {
+    const key = JSON.stringify(d); if (key === last) return; last = key; // only redraw when something changed
     box.innerHTML = '';
+    box.append(h('div', { class: 'step-no' }, `Today · ${name}`));
     const r = d.run, warn = !d.farm ? '⚠ Start location not marked — customers won’t see a time. Mark it on the Locations page.'
       : d.marked < d.stops ? `⚠ ${d.stops - d.marked} of ${d.stops} houses not marked yet — those customers won’t see a time.` : null;
     if (!r || r.ended) {
       box.className = 'run-box';
-      box.append(h('div', { class: 'run-state' }, r ? `✓ ${name} delivery finished at ${clock(r.ended)}` : `${name} delivery not started`),
+      box.append(h('div', { class: 'run-state' }, r ? `✓ ${name} delivery finished at ${clock(r.ended)}${who(r)}` : `${name} delivery not started`),
         h('div', { class: 'tag' }, `${d.stops} stops · about ${d.minutes} min`),
         h('button', { class: 'pri run-big', onclick: act('start', r ? `Start the ${name.toLowerCase()} delivery again?` : null) }, `▶ Start ${name} delivery`));
     } else if (r.paused_at) {
       box.className = 'run-box paused';
-      box.append(h('div', { class: 'run-state' }, `⏸ Paused since ${clock(r.paused_at)}`), h('div', { class: 'tag' }, 'Customers are told the delivery is paused. Their times move later by the time you are paused.'),
+      box.append(h('div', { class: 'run-state' }, `⏸ Paused since ${clock(r.paused_at)}${who(r)}`), h('div', { class: 'tag' }, 'Customers are told the delivery is paused. Their times move later by the time you are paused.'),
         h('div', { class: 'ract' }, h('button', { class: 'pri run-big', onclick: act('resume') }, '▶ Resume'), h('button', { onclick: act('end', `Finish the ${name.toLowerCase()} delivery?`) }, '✓ Finish')));
     } else {
       box.className = 'run-box on';
-      box.append(h('div', { class: 'run-state' }, `🟢 ${name} delivery started at ${clock(r.started)}`),
+      box.append(h('div', { class: 'run-state' }, `🟢 ${name} delivery ${r.paused_ms ? 'running' : 'started'} — since ${clock(r.started)}${who(r)}`),
         h('div', { class: 'tag' }, (d.finish_at ? `Expected to finish around ${clock(d.finish_at)}` : '') + (r.paused_ms ? ` · paused ${Math.round(r.paused_ms / 60000)} min so far` : '')),
         h('div', { class: 'ract' }, h('button', { class: 'run-big', onclick: act('pause') }, '⏸ Pause'), h('button', { onclick: act('end', `Finish the ${name.toLowerCase()} delivery? Customers stop seeing a time.`) }, '✓ Finish')));
     }
     if (warn) box.append(h('div', { class: 'tag bad', style: 'margin-top:8px' }, warn));
   };
-  api('run?session=' + session).then(paint, (e) => { box.textContent = e.message; });
+  refresh(true); timer = setInterval(() => refresh(false), 10000); document.addEventListener('visibilitychange', onWake);
   return box;
 }
 
@@ -921,6 +935,33 @@ pages.locations = async (v) => {
   });
 
   const listBox = h('div', { class: 'cards-list loc-list' }), info = h('p', { class: 'tag' });
+  // drag and drop: hold the ⠿ handle and slide the card up or down (mouse or finger); the list scrolls at the screen edges
+  function dragStart(e) {
+    const card = e.currentTarget.closest('.loc-card'); if (!card || e.button > 0) return;
+    e.preventDefault();
+    const handle = e.currentTarget; handle.setPointerCapture(e.pointerId);
+    const startY = e.pageY, top0 = card.offsetTop; let lastY = e.clientY, scrollT = null;
+    card.classList.add('dragging');
+    const follow = () => {
+      card.style.transform = `translateY(${lastY + scrollY - startY - (card.offsetTop - top0)}px)`;
+      const mid = card.getBoundingClientRect().top + card.offsetHeight / 2;
+      let p = card.previousElementSibling, n = card.nextElementSibling;
+      while (p && mid < p.getBoundingClientRect().top + p.offsetHeight / 2) { listBox.insertBefore(card, p); p = card.previousElementSibling; }
+      while (n && mid > n.getBoundingClientRect().top + n.offsetHeight / 2) { listBox.insertBefore(n, card); n = card.nextElementSibling; }
+      card.style.transform = `translateY(${lastY + scrollY - startY - (card.offsetTop - top0)}px)`;
+    };
+    const edge = () => { const k = lastY < 90 ? -12 : lastY > innerHeight - 90 ? 12 : 0; if (k) { scrollBy(0, k); follow(); } };
+    const moveH = (ev) => { lastY = ev.clientY; follow(); };
+    const upH = () => {
+      handle.removeEventListener('pointermove', moveH); handle.removeEventListener('pointerup', upH); handle.removeEventListener('pointercancel', upH); clearInterval(scrollT);
+      card.classList.remove('dragging'); card.style.transform = '';
+      const ids = [...listBox.querySelectorAll('.loc-card')].map((x) => x.dataset.id);
+      if (ids.join() !== order.join()) { order = ids; save(); }
+      draw();
+    };
+    handle.addEventListener('pointermove', moveH); handle.addEventListener('pointerup', upH); handle.addEventListener('pointercancel', upH);
+    scrollT = setInterval(edge, 16);
+  }
   const draw = () => {
     listBox.innerHTML = '';
     const q = L.filter.trim().toLowerCase(), filtering = !!q;
@@ -932,12 +973,13 @@ pages.locations = async (v) => {
       if (has(c)) prev = c;
       if (filtering && !(c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q))) return;
       const move = (to) => { if (to < 0 || to >= order.length || to === i) return; order.splice(to, 0, ...order.splice(i, 1)); draw(); save(); };
-      listBox.append(h('div', { class: 'rcard loc-card' + (has(c) ? '' : ' nomark') },
+      listBox.append(h('div', { class: 'rcard loc-card' + (has(c) ? '' : ' nomark'), 'data-id': c.id },
         h('div', { class: 'rtop' },
-          h('button', { class: 'loc-no', title: admin ? 'Move to position…' : '', disabled: filtering || !admin, onclick: () => { const n = Number(prompt(`Move ${c.name} to which position? (1–${order.length})`, i + 1)); if (n >= 1) move(Math.min(n, order.length) - 1); } }, i + 1),
+          filtering ? null : h('div', { class: 'drag-h', title: 'Hold and drag to move', 'aria-hidden': 'true', onpointerdown: dragStart }, '⠿'),
+          h('button', { class: 'loc-no', title: 'Move to position…', disabled: filtering, onclick: () => { const n = Number(prompt(`Move ${c.name} to which position? (1–${order.length})`, i + 1)); if (n >= 1) move(Math.min(n, order.length) - 1); } }, i + 1),
           h('div', { style: 'flex:1;min-width:0' }, h('div', { class: 'rname' }, c.name), h('div', { class: 'tag' }, c.id + ' · ' + lit(L.session === 'AM' ? c.am : c.pm) + ' L'),
             h('div', { class: 'tag ' + (has(c) ? 'good' : 'bad') }, has(c) ? `📍 Marked${c.acc != null ? ' ±' + c.acc + ' m' : ''}` + (leg != null ? ` · ${distText(leg)} from ${from}` : '') : '⚠ Location not marked')),
-          !admin ? null : h('div', { class: 'loc-move' }, h('button', { 'aria-label': 'Move up', disabled: filtering || i === 0, onclick: () => move(i - 1) }, '↑'), h('button', { 'aria-label': 'Move down', disabled: filtering || i === order.length - 1, onclick: () => move(i + 1) }, '↓'))),
+          h('div', { class: 'loc-move' }, h('button', { 'aria-label': 'Move up', disabled: filtering || i === 0, onclick: () => move(i - 1) }, '↑'), h('button', { 'aria-label': 'Move down', disabled: filtering || i === order.length - 1, onclick: () => move(i + 1) }, '↓'))),
         h('div', { class: 'ract' },
           // one-time setup: a saved house is locked; Re-mark / Clear only show in "Change saved locations" mode
           !has(c) ? h('button', { class: 'pri', disabled: !farm, onclick: () => mark(c.id, c.name)() }, farm ? '📍 Mark location here' : '🔒 Mark your start location first')
@@ -964,9 +1006,9 @@ pages.locations = async (v) => {
       !farm || L.edit ? h('div', { class: 'ract' }, h('button', { class: farm ? '' : 'pri', onclick: () => { if (farm && !confirm('Replace the start location with where you are standing now?')) return; mark('farm', 'Start location')(); } }, farm ? '📍 Re-mark start location' : '📍 Mark my start location here')) : null),
     h('div', { class: 'step-no', style: 'margin-top:4px' }, `Step 2 · Customer houses — ${doneN} of ${active.length} saved`),
     h('div', { class: 'loc-prog' }, h('div', { style: `width:${active.length ? Math.round(doneN / active.length * 100) : 0}%` })),
-    !admin ? h('p', { class: 'tag' }, 'You can mark houses that are not saved yet. To change a saved house or the order, ask the admin.') : null,
+    !admin ? h('p', { class: 'tag' }, 'You can mark houses that are not saved yet, and change the order. To change a saved house, ask the admin.') : null,
     h('div', { class: 'bar' }, sessSeg,
-      !admin ? null : h('button', { class: 'pri', onclick: () => {
+      h('button', { class: 'pri', onclick: () => {
         const marked = order.filter((id) => has(byId.get(id)));
         if (marked.length < 2) return toast('Mark at least 2 customer locations first', true);
         if (!confirm(`Put the ${marked.length} marked customers in the shortest order${farm ? ' from the farm' : ''}? Unmarked customers stay at the end. You can still move anyone after.`)) return;
