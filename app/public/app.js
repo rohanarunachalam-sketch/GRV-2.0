@@ -807,6 +807,161 @@ pages.notices = async (v) => {
   }
 };
 
+// ---------- Location Tracker (admin): mark each house with the phone's GPS, then set the delivery order ----------
+// GPS problems get a big pop-up that says exactly what to do (GPS off, permission blocked, plain http link)
+function gpsHelp(kind, retry) {
+  const msg = {
+    off: ['📡 Turn on GPS', 'Your phone’s Location (GPS) is off. Pull down the top bar of your phone, tap “Location” to turn it on, then tap Try again.', 'போனின் Location (GPS) ஆஃப்ல இருக்கு. மேல இருந்து கீழே இழுத்து “Location” ஆன் பண்ணுங்க.'],
+    denied: ['🔒 Allow location', 'This site is not allowed to use your location. Tap the 🔒 lock next to the web address → Permissions → Location → Allow. Then tap Try again.', 'இந்த site-க்கு Location அனுமதி இல்லை. Address bar-ல 🔒 தட்டி Location → Allow பண்ணுங்க.'],
+    slow: ['⏳ GPS signal is weak', 'Could not get your position. Check that GPS is on, step outside or near a window, and tap Try again.', 'GPS சிக்னல் கிடைக்கலை. GPS ஆன்ல இருக்கான்னு பாருங்க, வெளியே வந்து மீண்டும் முயற்சி பண்ணுங்க.'],
+    http: ['🔐 Use the secure link', 'Phones only share GPS with secure (https) links. Open the app from its https:// web link (not the Wi-Fi number link) to mark locations.', 'GPS-க்கு https:// link-ல app-ஐ திறக்கணும்.'],
+    none: ['📵 No GPS', 'This device or browser cannot share its location. Use a phone with Chrome.', 'இந்த போன்/browser-ல Location வசதி இல்லை.'],
+  }[kind];
+  const dlg = $('#dlg'); dlg.innerHTML = '';
+  dlg.append(h('form', { class: 'form gps-help', method: 'dialog' }, h('h1', {}, msg[0]), h('p', {}, msg[1]), h('p', { lang: 'ta', class: 'tag' }, msg[2]),
+    h('div', { class: 'acts' }, h('button', { type: 'submit' }, 'Close'), retry && kind !== 'http' && kind !== 'none' ? h('button', { class: 'pri', type: 'button', onclick: () => { dlg.close(); retry(); } }, 'Try again') : null)));
+  dlg.showModal();
+}
+// watch the GPS for a few seconds and keep the most accurate fix (stops early once it is within 15 m)
+function getGps(onProgress) {
+  return new Promise((resolve, reject) => {
+    if (!window.isSecureContext) return reject({ kind: 'http' });
+    if (!navigator.geolocation) return reject({ kind: 'none' });
+    let best = null, done = false;
+    const finish = (err) => { if (done) return; done = true; navigator.geolocation.clearWatch(id); clearTimeout(tm); best ? resolve(best) : reject(err || { kind: 'slow' }); };
+    const id = navigator.geolocation.watchPosition((p) => {
+      const fix = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy };
+      if (!best || fix.acc < best.acc) { best = fix; onProgress && onProgress(fix); }
+      if (fix.acc <= 15) finish();
+    }, (e) => finish({ kind: e.code === 1 ? 'denied' : e.code === 2 ? 'off' : 'slow' }), { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+    const tm = setTimeout(() => finish(), 12000);
+  });
+}
+const kmBetween = (a, b) => { // straight-line distance in km
+  const R = 6371, r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLng = (b.lng - a.lng) * r;
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+};
+const distText = (km) => (km < 1 ? Math.round(km * 1000 / 10) * 10 + ' m' : km.toFixed(1) + ' km');
+// shortest-path guess: nearest house next from the farm, then untangle crossing legs (2-opt)
+function autoOrder(stops, farm) {
+  const left = [...stops], path = [];
+  let at = farm || left[0];
+  while (left.length) { let bi = 0; for (let i = 1; i < left.length; i++) if (kmBetween(at, left[i]) < kmBetween(at, left[bi])) bi = i; at = left.splice(bi, 1)[0]; path.push(at); }
+  const pt = (i) => (i < 0 ? farm : path[i]);
+  for (let pass = 0, better = true; better && pass < 50; pass++) {
+    better = false;
+    for (let i = farm ? 0 : 1; i < path.length - 1; i++) for (let j = i + 1; j < path.length; j++) {
+      const a = pt(i - 1), b = path[i], c = path[j], d = path[j + 1];
+      if (!a) continue;
+      const before = kmBetween(a, b) + (d ? kmBetween(c, d) : 0), after = kmBetween(a, c) + (d ? kmBetween(b, d) : 0);
+      if (after < before - 1e-6) { path.splice(i, j - i + 1, ...path.slice(i, j + 1).reverse()); better = true; }
+    }
+  }
+  return path;
+}
+const L = { session: new Date().getHours() < 14 ? 'AM' : 'PM', filter: '', edit: false };
+pages.locations = async (v) => {
+  const d = await api('locations'), farm = d.farm;
+  const byId = new Map(d.customers.map((c) => [c.id, c]));
+  const has = (c) => c && c.lat != null;
+  const inSession = (c) => c.status === 'Active' && (L.session === 'AM' ? c.am : c.pm) > 0;
+  // saved order first, then anyone new for this session (by ID)
+  let order = d.order[L.session].filter((id) => byId.has(id) && inSession(byId.get(id)));
+  for (const c of d.customers) if (inSession(c) && !order.includes(c.id)) order.push(c.id);
+  let saveT = null;
+  const save = () => { clearTimeout(saveT); saveT = setTimeout(guard(async () => { await api('locations/order', 'PUT', { session: L.session, ids: order }); toast('Order saved'); }), 700); };
+
+  const mark = (what, label) => guard(async () => {
+    const dlg = $('#dlg'); dlg.innerHTML = '';
+    const st = h('p', { class: 'gps-acc' }, 'Getting GPS…');
+    dlg.append(h('form', { class: 'form gps-help', method: 'dialog' }, h('h1', {}, '📍 ' + label), h('p', { class: 'tag' }, 'Stand at the gate / door. Hold the phone still for a few seconds.'), st));
+    dlg.showModal();
+    let fix;
+    try { fix = await getGps((f) => { st.textContent = `Accuracy: ±${Math.round(f.acc)} m` + (f.acc <= 15 ? ' ✓' : ' … improving'); }); }
+    catch (e) { dlg.close(); return gpsHelp(e.kind || 'slow', mark(what, label)); }
+    dlg.close();
+    if (fix.acc > 100 && !confirm(`GPS is only accurate to ±${Math.round(fix.acc)} m. Save anyway? (Tap Cancel, go outside and try again for a better mark.)`)) return;
+    await api('locations/' + what, 'PUT', fix);
+    toast(`Location saved (±${Math.round(fix.acc)} m)`); render();
+  });
+
+  const listBox = h('div', { class: 'cards-list loc-list' }), info = h('p', { class: 'tag' });
+  const draw = () => {
+    listBox.innerHTML = '';
+    const q = L.filter.trim().toLowerCase(), filtering = !!q;
+    let prev = d.farm, total = 0, missing = 0;
+    order.forEach((id, i) => {
+      const c = byId.get(id); if (!has(c)) missing++;
+      const leg = has(c) && prev ? kmBetween(prev, c) : null, from = prev && prev === d.farm ? 'farm' : 'previous';
+      if (leg != null) total += leg;
+      if (has(c)) prev = c;
+      if (filtering && !(c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q))) return;
+      const move = (to) => { if (to < 0 || to >= order.length || to === i) return; order.splice(to, 0, ...order.splice(i, 1)); draw(); save(); };
+      listBox.append(h('div', { class: 'rcard loc-card' + (has(c) ? '' : ' nomark') },
+        h('div', { class: 'rtop' },
+          h('button', { class: 'loc-no', title: 'Move to position…', disabled: filtering, onclick: () => { const n = Number(prompt(`Move ${c.name} to which position? (1–${order.length})`, i + 1)); if (n >= 1) move(Math.min(n, order.length) - 1); } }, i + 1),
+          h('div', { style: 'flex:1;min-width:0' }, h('div', { class: 'rname' }, c.name), h('div', { class: 'tag' }, c.id + ' · ' + lit(L.session === 'AM' ? c.am : c.pm) + ' L'),
+            h('div', { class: 'tag ' + (has(c) ? 'good' : 'bad') }, has(c) ? `📍 Marked${c.acc != null ? ' ±' + c.acc + ' m' : ''}` + (leg != null ? ` · ${distText(leg)} from ${from}` : '') : '⚠ Location not marked')),
+          h('div', { class: 'loc-move' }, h('button', { 'aria-label': 'Move up', disabled: filtering || i === 0, onclick: () => move(i - 1) }, '↑'), h('button', { 'aria-label': 'Move down', disabled: filtering || i === order.length - 1, onclick: () => move(i + 1) }, '↓'))),
+        h('div', { class: 'ract' },
+          // one-time setup: a saved house is locked; Re-mark / Clear only show in "Change saved locations" mode
+          !has(c) ? h('button', { class: 'pri', disabled: !farm, onclick: () => mark(c.id, c.name)() }, farm ? '📍 Mark location here' : '🔒 Mark your start location first')
+            : L.edit ? h('button', { onclick: () => { if (confirm(`Replace ${c.name}'s saved location with where you are standing now?`)) mark(c.id, c.name)(); } }, '📍 Re-mark') : null,
+          has(c) ? h('a', { class: 'btn', href: `https://www.google.com/maps/dir/?api=1&destination=${c.lat},${c.lng}`, target: '_blank', rel: 'noopener' }, '🧭 Directions') : null,
+          has(c) && L.edit ? h('button', { class: 'abs', onclick: guard(async () => { if (!confirm(`Remove ${c.name}'s location?`)) return; await api('locations/' + c.id, 'DELETE'); toast('Removed'); render(); }) }, 'Clear') : null)));
+    });
+    if (!listBox.children.length) listBox.append(h('p', { class: 'mute' }, order.length ? 'No customer matches.' : 'No customers get milk in this session.'));
+    info.textContent = `${order.length} stops` + (total ? ` · about ${distText(total)} in total` : '');
+  };
+  // setup progress across all active customers (both sessions): a one-time job, done once every house is saved
+  const active = d.customers.filter((c) => c.status === 'Active' && (c.am > 0 || c.pm > 0)), doneN = active.filter(has).length;
+  const allDone = farm && doneN === active.length;
+
+  const sessSeg = h('div', { class: 'seg' }, [['AM', '🌅 Morning'], ['PM', '🌇 Evening']].map(([k, l]) => h('button', { class: L.session === k ? 'on' : '', onclick: () => { L.session = k; render(); } }, l)));
+  const search = h('input', { type: 'search', placeholder: 'Find customer (name or ID)', value: L.filter, oninput: (e) => { L.filter = e.target.value; draw(); } });
+  v.append(h('h1', {}, 'Location Tracker'),
+    h('p', { class: 'sub' }, 'One-time setup. Step 1: mark the place where delivery starts. Step 2: go to each customer’s house and mark it. The saved locations are kept and used for the delivery order and for the time customers see — no live tracking.'),
+    h('div', { id: 'gps-banner' }),
+    allDone ? h('div', { class: 'loc-done' }, '✅ Setup complete — all locations are saved. ', h('button', { class: 'link', onclick: () => { L.edit = !L.edit; render(); } }, L.edit ? '🔒 Done changing' : '✏️ Change saved locations'))
+      : farm ? h('div', { class: 'bar' }, h('button', { class: 'link', onclick: () => { L.edit = !L.edit; render(); } }, L.edit ? '🔒 Done changing' : '✏️ Change saved locations')) : null,
+    h('div', { class: 'rcard loc-farm' + (farm ? '' : ' step-now') }, h('div', { class: 'step-no' }, 'Step 1'), h('div', { class: 'rname' }, '🏠 Start location (farm — where delivery starts)'),
+      h('div', { class: 'tag ' + (farm ? 'good' : 'bad') }, farm ? `✓ Saved${farm.acc != null ? ' ±' + farm.acc + ' m' : ''}` : '⚠ Not marked yet — stand at the farm and tap the button'),
+      !farm || L.edit ? h('div', { class: 'ract' }, h('button', { class: farm ? '' : 'pri', onclick: () => { if (farm && !confirm('Replace the start location with where you are standing now?')) return; mark('farm', 'Start location')(); } }, farm ? '📍 Re-mark start location' : '📍 Mark my start location here')) : null),
+    h('div', { class: 'step-no', style: 'margin-top:4px' }, `Step 2 · Customer houses — ${doneN} of ${active.length} saved`),
+    h('div', { class: 'loc-prog' }, h('div', { style: `width:${active.length ? Math.round(doneN / active.length * 100) : 0}%` })),
+    h('div', { class: 'bar' }, sessSeg,
+      h('button', { class: 'pri', onclick: () => {
+        const marked = order.filter((id) => has(byId.get(id)));
+        if (marked.length < 2) return toast('Mark at least 2 customer locations first', true);
+        if (!confirm(`Put the ${marked.length} marked customers in the shortest order${farm ? ' from the farm' : ''}? Unmarked customers stay at the end. You can still move anyone after.`)) return;
+        order = [...autoOrder(marked.map((id) => byId.get(id)), farm).map((c) => c.id), ...order.filter((id) => !has(byId.get(id)))];
+        draw(); save();
+      } }, '⚡ Auto order (shortest path)')),
+    h('div', { class: 'bar' }, search), info, listBox);
+  draw();
+  // first visit: ask for the start location before anything else
+  if (!farm) {
+    const dlg = $('#dlg'); dlg.innerHTML = '';
+    dlg.append(h('form', { class: 'form gps-help', method: 'dialog' }, h('h1', {}, '🏠 First, mark your start location'),
+      h('p', {}, 'Stand at the farm (where delivery starts) and tap “Mark now”. This is done only once — after that, go to each customer’s house and mark it.'),
+      h('p', { lang: 'ta', class: 'tag' }, 'முதலில் பண்ணையில் (டெலிவரி தொடங்கும் இடம்) நின்று “Mark now” தட்டுங்க. இது ஒரே ஒரு முறை தான்.'),
+      h('div', { class: 'acts' }, h('button', { type: 'submit' }, 'Later'), h('button', { class: 'pri', type: 'button', onclick: () => { dlg.close(); mark('farm', 'Start location')(); } }, '📍 Mark now'))));
+    dlg.showModal();
+  }
+  // GPS check on opening: warn straight away if location is blocked or the GPS is off
+  const banner = $('#gps-banner');
+  const warn = (kind) => { banner.innerHTML = ''; banner.append(h('div', { class: 'gps-warn' }, h('b', {}, { off: '📡 GPS is off — turn on Location on your phone', denied: '🔒 Location is blocked for this site', http: '🔐 Open the https:// link to use GPS', none: '📵 This browser has no GPS', slow: '⏳ GPS signal is weak' }[kind]),
+    h('button', { onclick: () => gpsHelp(kind, check) }, 'How to fix'))); };
+  const check = () => {
+    if (!window.isSecureContext) return warn('http');
+    if (!navigator.geolocation) return warn('none');
+    const probe = () => navigator.geolocation.getCurrentPosition(() => { banner.innerHTML = ''; }, (e) => warn(e.code === 1 ? 'denied' : e.code === 2 ? 'off' : 'slow'), { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
+    if (navigator.permissions) navigator.permissions.query({ name: 'geolocation' }).then((p) => { if (p.state === 'denied') warn('denied'); else if (p.state === 'granted') probe(); }, () => {}); // 'prompt': ask only when they tap Mark
+  };
+  check();
+};
+
 // ---------- customer portal ----------
 // Big round buttons that always show every choice. If nothing is picked the whole box turns red,
 // so a customer who can't read well still sees what is missing.
@@ -1032,7 +1187,7 @@ function monthCalendar(d) {
       cells.map((x, i) => x ? h('div', { class: 'cal-d ' + (cls[x.st] || '') + (x.date === d.today ? ' today' : ''), style: `--w:${Math.floor(i / 7) + (i % 7)}`, title: x.st ? (x.st === 'Unavailable' ? 'Milk Unavailable' : x.st) : '' }, Number(x.date.slice(8))) : h('div', {}))),
     h('div', { class: 'cal-key' }, h('span', { class: 'ok' }, 'Delivered'), h('span', { class: 'pause' }, 'Paused'), h('span', { class: 'out' }, 'Milk Unavailable')));
 }
-const NAV = [['dashboard', 'Dashboard'], ['delivery', 'Delivery'], ['notices', 'Notices'], ['daily', 'Daily Summary'], ['bills', 'Bills'], ['customers', 'Customers'], ['income', 'Income'], ['expenses', 'Expenses'], ['pnl', 'P&L'], ['cows', 'Cows'], ['yield', 'Cow Yield'], ['extras', 'Extras'], ['settings', 'Settings']];
+const NAV = [['dashboard', 'Dashboard'], ['delivery', 'Delivery'], ['notices', 'Notices'], ['daily', 'Daily Summary'], ['bills', 'Bills'], ['customers', 'Customers'], ['income', 'Income'], ['expenses', 'Expenses'], ['pnl', 'P&L'], ['cows', 'Cows'], ['yield', 'Cow Yield'], ['extras', 'Extras'], ['locations', 'Location Tracker'], ['settings', 'Settings']];
 // the admin menu in the order picked in Settings; a page missing from the saved order keeps its default place at the end
 const navInOrder = () => { const saved = S.user.nav_order || []; return [...saved.map((k) => NAV.find((n) => n[0] === k)).filter(Boolean), ...NAV.filter((n) => !saved.includes(n[0]))]; };
 const DELIVERY_NAV = [['delivery', 'Deliveries'], ['notices', 'Notices']];

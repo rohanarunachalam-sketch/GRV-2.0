@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, unit TEXT DEFAULT 'Nos', price REAL DEFAULT 0, stock REAL DEFAULT 0, active INTEGER DEFAULT 1);
 CREATE TABLE IF NOT EXISTS customer_plans(customer_id TEXT, from_date TEXT, am REAL DEFAULT 0, pm REAL DEFAULT 0, price REAL DEFAULT 0, status TEXT DEFAULT 'Active', PRIMARY KEY(customer_id, from_date));
 CREATE TABLE IF NOT EXISTS qty_requests(id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id TEXT, date TEXT, session TEXT, qty REAL, note TEXT DEFAULT '', status TEXT DEFAULT 'Pending', created TEXT, decided TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS customer_locations(customer_id TEXT PRIMARY KEY, lat REAL, lng REAL, acc REAL, marked TEXT);
 CREATE TABLE IF NOT EXISTS product_orders(id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, customer_id TEXT, qty REAL, price REAL, date TEXT, status TEXT DEFAULT 'Booked', note TEXT DEFAULT '', created TEXT, created_by TEXT);
 `;
 
@@ -360,8 +361,43 @@ route('GET', '/api/route', async ({ q, user }) => {
     const qty = ov.has(c.id) ? ov.get(c.id) : null;
     if (def > 0 || (qty !== null && qty > 0)) items.push({ id: c.id, name: c.name, def, qty, skip: skipBy.get(c.id) || null, unavail: unv.has(c.id) && qty === 0 });
   }
+  // follow the delivery order saved on the Location Tracker page; customers not placed yet go last (by ID)
+  const pos = new Map((await getSetting('route_order_' + q.session, [])).map((id, i) => [id, i]));
+  items.sort((a, b) => (pos.get(a.id) ?? 1e9) - (pos.get(b.id) ?? 1e9));
   return { date: q.date, session: q.session, items };
 });
+
+// ---- Location Tracker (admin): each customer's house on the map, the farm, and the delivery order per session
+const validLatLng = (b) => {
+  const lat = Number(b.lat), lng = Number(b.lng);
+  need(Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && !(lat === 0 && lng === 0), 'Location is not valid');
+  const acc = Number(b.acc); return { lat, lng, acc: Number.isFinite(acc) && acc >= 0 ? Math.round(acc) : null };
+};
+route('GET', '/api/locations', async () => {
+  const locs = new Map((await all('SELECT * FROM customer_locations')).map((r) => [r.customer_id, r]));
+  const plans = await plansOf(), t = today();
+  const customers = (await all('SELECT id, name, bill_name, am, pm, price, status FROM customers ORDER BY id')).map((c) => {
+    const p = planOn(c, plans.get(c.id), t), l = locs.get(c.id);
+    return { id: c.id, name: c.name, am: defQty(p, 'AM'), pm: defQty(p, 'PM'), status: p.status, lat: l ? l.lat : null, lng: l ? l.lng : null, acc: l ? l.acc : null, marked: l ? l.marked : null };
+  });
+  return { customers, farm: await getSetting('farm_location', null), order: { AM: await getSetting('route_order_AM', []), PM: await getSetting('route_order_PM', []) } };
+});
+route('PUT', '/api/locations/farm', async ({ body }) => { const l = validLatLng(body); await setSetting('farm_location', { ...l, marked: new Date().toISOString() }); return { ok: true }; });
+route('DELETE', '/api/locations/farm', async () => { await run("DELETE FROM settings WHERE key='farm_location'"); return { ok: true }; });
+route('PUT', '/api/locations/order', async ({ body }) => {
+  need(['AM', 'PM'].includes(body.session), 'session must be AM or PM');
+  need(Array.isArray(body.ids) && body.ids.length <= 2000, 'ids must be a list');
+  const known = new Set((await all('SELECT id FROM customers')).map((r) => r.id));
+  const ids = [...new Set(body.ids.map(String))].filter((id) => known.has(id));
+  await setSetting('route_order_' + body.session, ids); return { ok: true, count: ids.length };
+});
+route('PUT', '/api/locations/([^/]+)', async ({ body, m }) => {
+  need(await get('SELECT id FROM customers WHERE id=?', [m[1]]), 'not found');
+  const l = validLatLng(body);
+  await run('INSERT OR REPLACE INTO customer_locations(customer_id,lat,lng,acc,marked) VALUES(?,?,?,?,?)', [m[1], l.lat, l.lng, l.acc, new Date().toISOString()]);
+  return { ok: true };
+});
+route('DELETE', '/api/locations/([^/]+)', async ({ m }) => { await run('DELETE FROM customer_locations WHERE customer_id=?', [m[1]]); return { ok: true }; });
 route('GET', '/api/me', async ({ user }) => {
   const me = { role: user.role, today: today(), yesterday: yesterday() };
   if (user.role === 'customer') { const c = await get('SELECT id, bill_name FROM customers WHERE id=?', [user.cid]); Object.assign(me, { cid: user.cid, name: c && c.bill_name }); }
@@ -384,7 +420,7 @@ route('GET', '/api/export', async ({ user }) => {
   const out = {};
   for (const [key, sql] of [['Customers', 'SELECT * FROM customers ORDER BY id'], ['Customer Changes', 'SELECT * FROM customer_plans ORDER BY customer_id, from_date'],['Deliveries', 'SELECT * FROM deliveries ORDER BY date, customer_id, session'], ['Payments', 'SELECT * FROM payments ORDER BY date, id'],
     ['Income', 'SELECT * FROM income ORDER BY date, id'], ['Expenses', 'SELECT * FROM expenses ORDER BY date, id'], ['Cows', 'SELECT * FROM cows ORDER BY id'], ['Cow Yield', 'SELECT * FROM cow_yield ORDER BY date, cow_id'],
-    ['Extra Items', 'SELECT * FROM products ORDER BY id'], ['Extra Bookings', 'SELECT * FROM product_orders ORDER BY id'], ['Cow AI', 'SELECT * FROM cow_ai ORDER BY id'], ['Pauses', 'SELECT * FROM skips ORDER BY id'], ['Milk Unavailable', 'SELECT * FROM milk_unavailable ORDER BY date, customer_id'], ['Quantity Requests', 'SELECT * FROM qty_requests ORDER BY id']]) out[key] = await all(sql);
+    ['Extra Items', 'SELECT * FROM products ORDER BY id'], ['Extra Bookings', 'SELECT * FROM product_orders ORDER BY id'], ['Cow AI', 'SELECT * FROM cow_ai ORDER BY id'], ['Pauses', 'SELECT * FROM skips ORDER BY id'], ['Milk Unavailable', 'SELECT * FROM milk_unavailable ORDER BY date, customer_id'], ['Quantity Requests', 'SELECT * FROM qty_requests ORDER BY id'], ['Customer Locations', 'SELECT * FROM customer_locations ORDER BY customer_id']]) out[key] = await all(sql);
   return out;
 });
 

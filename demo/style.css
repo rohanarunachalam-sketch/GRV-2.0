@@ -387,6 +387,27 @@ body.customer .bar .seg{width:100%}
 .cal-key span{display:inline-flex;align-items:center;gap:7px}
 .cal-key span::before{content:"";width:14px;height:14px;border-radius:5px}
 .cal-key .ok::before{background:#4fb36f}.cal-key .pause::before{background:#f2c230}.cal-key .out::before{background:#e5584a}
+/* Location Tracker (admin) */
+a.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:#fff;border:1px solid var(--line2);color:var(--ink);border-radius:var(--r-sm);padding:8px 15px;min-height:38px;font-weight:600;font-size:13.5px;line-height:1.2;text-decoration:none}
+a.btn:hover{background:var(--brand-xl)}
+.loc-farm{margin:0 0 14px}
+.loc-farm.step-now{border:2px solid var(--brand-m);box-shadow:0 0 0 4px var(--brand-l)}
+.step-no{font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--brand-m);margin-bottom:4px}
+.loc-prog{height:8px;border-radius:6px;background:var(--line);overflow:hidden;margin:0 0 12px}
+.loc-prog div{height:100%;background:var(--brand-m);border-radius:6px;transition:width .4s}
+.loc-done{background:var(--brand-l);color:var(--brand);border-radius:12px;padding:10px 14px;margin:0 0 14px;font-weight:700}
+.loc-card .rtop{display:flex;align-items:center;gap:12px}
+.loc-card.nomark{border-style:dashed}
+.rcard .loc-no{flex:none;width:38px;height:38px;min-height:0;padding:0;border-radius:50%;background:var(--brand);color:#fff;border-color:var(--brand);font-weight:800;font-size:15px}
+.loc-no:disabled{opacity:1;cursor:default}
+.loc-card.nomark .loc-no{background:#fff;color:var(--mute);border-color:var(--line2)}
+.loc-move{display:flex;flex-direction:column;gap:4px;flex:none}
+.rcard .loc-move button{flex:none;width:40px;height:34px;min-height:0;padding:0;font-size:18px}
+.loc-move button:disabled{opacity:.3}
+.loc-list .ract{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.gps-warn{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:var(--bad-l);border:1.5px solid var(--bad);color:var(--bad);border-radius:12px;padding:12px 14px;margin:0 0 14px;animation:shake .4s}
+.gps-help p{font-size:15px;line-height:1.5}
+.gps-acc{font-size:18px!important;font-weight:700;color:var(--brand);margin:14px 0 4px}
 /* customer No milk: tap-to-pick calendar */
 .pick-cal{margin:4px 0 8px;border:2px solid var(--line)}
 .pick-cal.missing{border-color:var(--bad);background:var(--bad-l);animation:shake .4s}
