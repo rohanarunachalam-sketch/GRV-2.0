@@ -430,10 +430,11 @@ route('GET', '/api/portal/eta', async ({ user }) => {
     const r = await runOf(d, s); if (!r || !r.started) continue;
     const e = await etaOffsets(d, s), me = e.out.get(user.cid);
     if (!me) continue; // not on this round (no milk this session, or asked for no milk)
-    const eta = r.started + delayOf(r, r.ended || now) + me.min * 60000;
-    const from = Math.floor((eta - 5 * 60000) / 300000) * 300000; // a 15-minute window around the guess, on 5-minute marks
-    const v = { session: s, state: r.ended ? 'finished' : r.paused_at ? 'paused' : 'running', from: Math.max(from, r.started), to: Math.max(from, r.started) + WINDOW_MIN * 60000,
-      paused_min: Math.round(delayOf(r, now) / 60000), paused_since: r.paused_at || null };
+    // the window is set on 5-minute marks when the round starts; each whole minute of pause then moves it 1 minute later
+    // (6:00–6:15 → 6:01–6:16 …). Customers are never told about a pause — they only see the time move.
+    const base = Math.max(Math.floor((r.started + me.min * 60000 - 5 * 60000) / 300000) * 300000, Math.floor(r.started / 60000) * 60000);
+    const from = base + Math.floor(delayOf(r, r.ended || now) / 60000) * 60000;
+    const v = { session: s, state: r.ended ? 'finished' : 'running', from, to: from + WINDOW_MIN * 60000 };
     if (r.ended && now - r.ended > 2 * 3600e3) continue; // yesterday's news
     if (!best || (best.state === 'finished' && v.state !== 'finished') || v.from > best.from) best = v;
   }

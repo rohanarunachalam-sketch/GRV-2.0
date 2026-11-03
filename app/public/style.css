@@ -505,3 +505,24 @@ button.run-big{min-height:52px;font-size:17px;border-radius:12px}
 .drag-h:active{cursor:grabbing;background:var(--brand-l);color:var(--brand)}
 .loc-card.dragging{position:relative;z-index:5;box-shadow:0 14px 34px rgba(10,30,18,.28);border-color:var(--brand-m);transition:none;opacity:.97}
 .loc-list.cards-list{grid-template-columns:1fr;max-width:760px;user-select:none;-webkit-user-select:none}
+/* customer time card: uncle driving a maattu vandi with milk cans */
+.cart-scene{margin:-4px -6px 6px;height:96px;overflow:hidden;border-radius:12px;background:linear-gradient(#eaf7ff,#f4fbf6 70%)}
+.cart-scene svg{width:100%;height:100%;display:block}
+.cs-rig{animation:cs-drive 9s ease-in-out infinite}
+.cs-bob{animation:cs-bob .5s ease-in-out infinite alternate}
+.cs-wheel{animation:cs-spin 1.1s linear infinite}
+.cs-leg.l1{animation:cs-step .55s ease-in-out infinite alternate}
+.cs-leg.l2{animation:cs-step .55s ease-in-out infinite alternate-reverse}
+.cs-head{animation:cs-nod 1.1s ease-in-out infinite}
+.cs-tail{animation:cs-tail 1.4s ease-in-out infinite alternate}
+.cs-road{animation:cs-road 1.1s linear infinite}
+.cs-hills{animation:cs-hills 14s linear infinite alternate}
+@keyframes cs-drive{0%,100%{transform:translateX(-6px)}50%{transform:translateX(8px)}}
+@keyframes cs-bob{to{transform:translateY(-1.6px)}}
+@keyframes cs-spin{to{transform:rotate(360deg)}}
+@keyframes cs-step{from{transform:rotate(-13deg)}to{transform:rotate(13deg)}}
+@keyframes cs-nod{0%,100%{transform:rotate(0)}50%{transform:rotate(5deg)}}
+@keyframes cs-tail{from{transform:rotate(-12deg)}to{transform:rotate(14deg)}}
+@keyframes cs-road{to{transform:translateX(-44px)}}
+@keyframes cs-hills{to{transform:translateX(-20px)}}
+@media (prefers-reduced-motion:reduce){.cart-scene *{animation:none!important}}

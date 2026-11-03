@@ -308,7 +308,7 @@ function runControl(session) {
         h('button', { class: 'pri run-big', onclick: act('start', r ? `Start the ${name.toLowerCase()} delivery again?` : null) }, `▶ Start ${name} delivery`));
     } else if (r.paused_at) {
       box.className = 'run-box paused';
-      box.append(h('div', { class: 'run-state' }, `⏸ Paused since ${clock(r.paused_at)}${who(r)}`), h('div', { class: 'tag' }, 'Customers are told the delivery is paused. Their times move later by the time you are paused.'),
+      box.append(h('div', { class: 'run-state' }, `⏸ Paused since ${clock(r.paused_at)}${who(r)}`), h('div', { class: 'tag' }, 'Customers are not told about the pause — their time just moves 1 minute later for every minute you are paused.'),
         h('div', { class: 'ract' }, h('button', { class: 'pri run-big', onclick: act('resume') }, '▶ Resume'), h('button', { onclick: act('end', `Finish the ${name.toLowerCase()} delivery?`) }, '✓ Finish')));
     } else {
       box.className = 'run-box on';
@@ -1040,8 +1040,67 @@ pages.locations = async (v) => {
 };
 
 // ---------- customer portal ----------
-// "Your milk will arrive between 6:00 and 6:15 PM" — shown once today's delivery is started; checks again every minute
+// "Your milk will arrive between 6:00 and 6:15 PM" — shown once today's delivery is started; checks again every 30 s
 let etaTimer = null;
+// an uncle driving a maattu vandi (bullock cart) loaded with milk cans along the road: wheels turn, the ox walks, the road slides by
+function cartScene() {
+  const el = h('div', { class: 'cart-scene', 'aria-hidden': 'true' });
+  el.innerHTML = `<svg viewBox="0 0 320 110" preserveAspectRatio="xMidYMax slice">
+    <g class="cs-hills"><path d="M0 78 q40 -26 80 -6 q40 -24 90 -4 q50 -22 90 -2 q30 -12 60 -4 v18 h-320z" fill="#bfe3c9"/></g>
+    <g class="cs-sun"><circle cx="34" cy="22" r="11" fill="#ffd66b"/></g>
+    <rect x="0" y="88" width="320" height="22" fill="#d9c7a3"/>
+    <g class="cs-road"><path d="M0 98 h22 M44 98 h22 M88 98 h22 M132 98 h22 M176 98 h22 M220 98 h22 M264 98 h22 M308 98 h22 M352 98 h22" stroke="#fff6e0" stroke-width="3" stroke-linecap="round"/></g>
+    <g class="cs-rig">
+      <g class="cs-bob">
+        <!-- cart: bed, side rails, pole to the yoke -->
+        <path d="M150 64 L214 58" stroke="#7a4a22" stroke-width="4" stroke-linecap="round"/>
+        <rect x="58" y="58" width="96" height="9" rx="2" fill="#a0612e"/>
+        <path d="M60 58 v-10 M152 58 v-10 M60 48 h92" stroke="#7a4a22" stroke-width="3" stroke-linecap="round"/>
+        <!-- milk cans -->
+        <g fill="#cfd8dc" stroke="#78909c" stroke-width="1.5">
+          <path d="M68 58 v-20 q0 -5 5 -6 h8 q5 1 5 6 v20z"/><rect x="72" y="27" width="10" height="6" rx="1.5"/>
+          <path d="M90 58 v-20 q0 -5 5 -6 h8 q5 1 5 6 v20z"/><rect x="94" y="27" width="10" height="6" rx="1.5"/>
+        </g>
+        <path d="M68 44 h18 M90 44 h18" stroke="#90a4ae" stroke-width="1.5"/>
+        <!-- uncle: veshti, white shirt, orange turban, big moustache, holding the reins -->
+        <path d="M122 58 q2 -12 12 -12 q10 0 12 12z" fill="#fafafa" stroke="#cfcfcf"/>
+        <path d="M126 46 q1 -16 10 -16 q9 0 10 16z" fill="#ffffff" stroke="#d8d8d8"/>
+        <circle cx="136" cy="22" r="8" fill="#a8693f"/>
+        <path d="M127 18 q9 -10 18 0 q-2 -5 -9 -5 q-7 0 -9 5z" fill="#f08a24"/><path d="M127 18 h18" stroke="#d56f12" stroke-width="2"/>
+        <path d="M131 26 q5 3 10 0" stroke="#2b1a10" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+        <circle cx="139" cy="21" r="1.1" fill="#2b1a10"/>
+        <path d="M144 38 q14 2 26 -4" stroke="#a8693f" stroke-width="3.2" fill="none" stroke-linecap="round"/>
+        <path d="M170 34 Q195 30 232 38" stroke="#5d3a1a" stroke-width="1.2" fill="none"/>
+      </g>
+      <!-- wheel -->
+      <g class="cs-wheel" style="transform-origin:96px 72px">
+        <circle cx="96" cy="72" r="17" fill="none" stroke="#6b3f1d" stroke-width="4"/>
+        <path d="M96 55 v34 M79 72 h34 M84 60 l24 24 M108 60 l-24 24" stroke="#6b3f1d" stroke-width="2.4"/>
+        <circle cx="96" cy="72" r="3.5" fill="#6b3f1d"/>
+      </g>
+      <!-- ox: legs walk, head nods, tail swings -->
+      <g class="cs-ox">
+        <g class="cs-leg l1" style="transform-origin:204px 60px"><path d="M204 60 v26" stroke="#e7e1d6" stroke-width="5" stroke-linecap="round"/><path d="M204 86 h3" stroke="#3a2a20" stroke-width="5" stroke-linecap="round"/></g>
+        <g class="cs-leg l2" style="transform-origin:214px 60px"><path d="M214 60 v26" stroke="#f5f1ea" stroke-width="5" stroke-linecap="round"/><path d="M214 86 h3" stroke="#3a2a20" stroke-width="5" stroke-linecap="round"/></g>
+        <g class="cs-leg l2" style="transform-origin:244px 60px"><path d="M244 60 v26" stroke="#e7e1d6" stroke-width="5" stroke-linecap="round"/><path d="M244 86 h3" stroke="#3a2a20" stroke-width="5" stroke-linecap="round"/></g>
+        <g class="cs-leg l1" style="transform-origin:254px 60px"><path d="M254 60 v26" stroke="#f5f1ea" stroke-width="5" stroke-linecap="round"/><path d="M254 86 h3" stroke="#3a2a20" stroke-width="5" stroke-linecap="round"/></g>
+        <path class="cs-tail" style="transform-origin:198px 50px" d="M198 50 q-8 8 -6 22" stroke="#d9d2c5" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+        <ellipse cx="228" cy="52" rx="32" ry="15" fill="#f5f1ea" stroke="#d9d2c5" stroke-width="1.5"/>
+        <path d="M236 38 q6 -8 12 0" fill="#f5f1ea" stroke="#d9d2c5" stroke-width="1.5"/>
+        <path d="M212 40 L218 66" stroke="#7a4a22" stroke-width="3" stroke-linecap="round"/>
+        <g class="cs-head" style="transform-origin:256px 46px">
+          <path d="M254 44 q10 -6 18 2 q6 8 4 16 q-6 4 -12 0 q-8 -6 -10 -18z" fill="#f5f1ea" stroke="#d9d2c5" stroke-width="1.5"/>
+          <path d="M260 40 q-4 -10 -10 -12 M268 41 q4 -10 11 -11" stroke="#c9a86a" stroke-width="3.2" fill="none" stroke-linecap="round"/>
+          <path d="M260 40 q-4 -10 -10 -12 M268 41 q4 -10 11 -11" stroke="#e85d75" stroke-width="3.2" fill="none" stroke-linecap="round" stroke-dasharray="3 9"/>
+          <circle cx="268" cy="50" r="1.4" fill="#2b1a10"/>
+          <ellipse cx="272" cy="60" rx="5" ry="3.5" fill="#e9b7a9"/>
+          <circle cx="262" cy="58" r="2.4" fill="#f2c230" stroke="#c99a1e" stroke-width=".8"/>
+        </g>
+      </g>
+    </g>
+  </svg>`;
+  return el;
+}
 function etaCard() {
   const box = h('div', { class: 'eta-card', hidden: true });
   clearInterval(etaTimer);
@@ -1053,12 +1112,11 @@ function etaCard() {
       const when = e.session === 'AM' ? 'morning' : 'evening', win = `${clock(e.from)} – ${clock(e.to)}`;
       box.hidden = false; box.className = 'eta-card ' + e.state;
       if (e.state === 'finished') box.append(h('div', { class: 'eta-l' }, `✓ Today’s ${when} delivery is finished`), h('div', { class: 'tag' }, 'Thank you! 🥛'));
-      else if (e.state === 'paused') box.append(h('div', { class: 'eta-l' }, '⏸ Delivery is paused for a few minutes'), h('div', { class: 'eta-t' }, win), h('div', { class: 'tag' }, 'Your time will move a little later. Sorry for the wait 🙏'), h('div', { class: 'tag', lang: 'ta' }, 'டெலிவரி சில நிமிடங்கள் நிறுத்தப்பட்டுள்ளது.'));
-      else if (e.state === 'late') box.append(h('div', { class: 'eta-l' }, '🛵 Your milk is on the way'), h('div', { class: 'tag' }, 'It is taking a little longer today. Sorry for the wait 🙏'));
-      else box.append(h('div', { class: 'eta-l' }, `🛵 Your ${when} milk will arrive between`), h('div', { class: 'eta-t' }, win), h('div', { class: 'tag', lang: 'ta' }, `உங்க பால் ${win} க்குள் வரும்`), h('div', { class: 'tag' }, 'Approximate time'));
+      else if (e.state === 'late') box.append(cartScene(), h('div', { class: 'eta-l' }, 'Your milk is on the way'), h('div', { class: 'tag' }, 'It is taking a little longer today. Sorry for the wait 🙏'));
+      else box.append(cartScene(), h('div', { class: 'eta-l' }, `Your ${when} milk will arrive between`), h('div', { class: 'eta-t' }, win), h('div', { class: 'tag', lang: 'ta' }, `உங்க பால் ${win} க்குள் வரும்`), h('div', { class: 'tag' }, 'Approximate time'));
     }, () => {});
   };
-  load(true); etaTimer = setInterval(() => load(false), 60000);
+  load(true); etaTimer = setInterval(() => load(false), 30000);
   return box;
 }
 // Big round buttons that always show every choice. If nothing is picked the whole box turns red,
