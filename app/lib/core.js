@@ -56,6 +56,7 @@ const init = () => ready || (ready = (async () => {
   try { await client.execute('ALTER TABLE product_orders ADD COLUMN delivered_on TEXT'); } catch { /* already there */ }
   try { await client.execute("ALTER TABLE customers ADD COLUMN bill_name TEXT DEFAULT ''"); } catch { /* already there */ }
   try { await client.execute('ALTER TABLE delivery_runs ADD COLUMN last_by TEXT'); } catch { /* already there */ }
+  try { await client.execute('ALTER TABLE sessions ADD COLUMN shift TEXT'); } catch { /* already there */ }
   if ((await get('SELECT COUNT(*) n FROM users')).n === 0) {
     let creds = { admin: process.env.ADMIN_PASSWORD, delivery: process.env.DELIVERY_PASSWORD };
     if (!creds.admin || !creds.delivery) {
@@ -67,6 +68,9 @@ const init = () => ready || (ready = (async () => {
     }
     for (const [role, pw] of Object.entries(creds)) await setPassword(role, pw);
   }
+  // optional starting passwords for the morning / evening delivery logins (used by the demo); the admin can change them in Settings
+  for (const [role, pw] of [['delivery_am', process.env.DELIVERY_AM_PASSWORD], ['delivery_pm', process.env.DELIVERY_PM_PASSWORD]])
+    if (pw && !(await get('SELECT 1 x FROM users WHERE role=?', [role]))) await setPassword(role, pw);
   const seedFile = path.join(ROOT, 'seed.json');
   if (!ON_VERCEL && (await get('SELECT COUNT(*) n FROM customers')).n === 0 && fs.existsSync(seedFile)) {
     const seed = JSON.parse(fs.readFileSync(seedFile, 'utf8'));
@@ -253,6 +257,8 @@ const DELIVERY_ALLOWED = new Set(['GET /api/me', 'POST /api/logout', 'GET /api/r
 const roleAllows = (role, key) => role === 'admin' || (role === 'delivery' && (DELIVERY_ALLOWED.has(key) || deliveryExtra(key))) ||
   (role === 'customer' && (['GET /api/me', 'POST /api/logout'].includes(key) || key.split(' ')[1].startsWith('/api/portal')));
 // delivery staff may only touch today's and yesterday's entries
+// a morning-only or evening-only delivery login may only see and change its own session
+const checkShift = (user, session) => need(!user.shift || user.shift === 'BOTH' || user.shift === session, `This login is for the ${user.shift === 'AM' ? 'morning' : 'evening'} delivery only`);
 const checkDeliveryDate = (user, date) => { if (user.role !== 'admin') need(date === today() || date === yesterday(), 'You can only edit today or yesterday'); };
 
 route('GET', '/api/lists', () => lists());
@@ -328,7 +334,7 @@ route('GET', '/api/delivery', async ({ q }) => {
 });
 // qty null/'' => clear the override (back to default); 0 => no delivery.
 route('PUT', '/api/delivery', async ({ body, user }) => {
-  validDate(body.date); checkDeliveryDate(user, body.date); need(['AM', 'PM'].includes(body.session), 'session must be AM or PM');
+  validDate(body.date); checkDeliveryDate(user, body.date); need(['AM', 'PM'].includes(body.session), 'session must be AM or PM'); checkShift(user, body.session);
   need(await exists('customers', body.customer_id), 'unknown customer');
   await run('DELETE FROM milk_unavailable WHERE date=? AND customer_id=? AND session=?', [body.date, body.customer_id, body.session]); // a manual change replaces the 'Milk Unavailable' mark
   if (body.qty === null || body.qty === '' || body.qty === undefined) await run('DELETE FROM deliveries WHERE date=? AND customer_id=? AND session=?', [body.date, body.customer_id, body.session]);
@@ -337,7 +343,7 @@ route('PUT', '/api/delivery', async ({ body, user }) => {
 });
 // Admin marks a delivery as "Milk Unavailable" (supply shortage). Stored as a 0 quantity (so bills are unchanged) plus a flag that tells it apart from a normal Absent.
 route('PUT', '/api/delivery/unavailable', async ({ body, user }) => {
-  validDate(body.date); checkDeliveryDate(user, body.date); need(['AM', 'PM'].includes(body.session), 'session must be AM or PM'); need(await exists('customers', body.customer_id), 'unknown customer');
+  validDate(body.date); checkDeliveryDate(user, body.date); need(['AM', 'PM'].includes(body.session), 'session must be AM or PM'); checkShift(user, body.session); need(await exists('customers', body.customer_id), 'unknown customer');
   const k = [body.date, body.customer_id, body.session];
   if (body.on) { await run('INSERT OR REPLACE INTO deliveries(date,customer_id,session,qty) VALUES(?,?,?,0)', k); await run('INSERT OR IGNORE INTO milk_unavailable(date,customer_id,session) VALUES(?,?,?)', k); }
   else { await run('DELETE FROM milk_unavailable WHERE date=? AND customer_id=? AND session=?', k); await run('DELETE FROM deliveries WHERE date=? AND customer_id=? AND session=?', k); }
@@ -353,7 +359,7 @@ route('POST', '/api/delivery/reset-day', async ({ body }) => { // clear all over
 
 // Delivery-boy friendly list for one date + session: no prices, phones or amounts.
 route('GET', '/api/route', async ({ q, user }) => {
-  validDate(q.date); need(['AM', 'PM'].includes(q.session), 'session must be AM or PM'); checkDeliveryDate(user, q.date);
+  validDate(q.date); need(['AM', 'PM'].includes(q.session), 'session must be AM or PM'); checkDeliveryDate(user, q.date); checkShift(user, q.session);
   return { date: q.date, session: q.session, items: await routeList(q.date, q.session) };
 });
 // the delivery list for one date + session, in the saved Location Tracker order (also used for the customers' delivery times)
@@ -387,27 +393,27 @@ const kmBetween = (a, b) => {
 async function etaOffsets(date, session) {
   const items = (await routeList(date, session)).filter((it) => (it.qty ?? (it.skip ? 0 : it.def)) > 0 && !it.unavail);
   const locs = new Map((await all('SELECT * FROM customer_locations')).map((r) => [r.customer_id, r]));
-  let prev = await getSetting('farm_location', null), t = 0;
+  let prev = await getSetting('farm_location', null), t = 0, km = 0;
   const out = new Map();
   for (const it of items) {
     const l = locs.get(it.id);
-    if (l && prev) t += kmBetween(prev, l) * ROAD_FACTOR / KMH * 60;
+    if (l && prev) { const leg = kmBetween(prev, l) * ROAD_FACTOR; km += leg; t += leg / KMH * 60; }
     if (l) prev = l;
     out.set(it.id, { min: t, marked: !!l }); t += STOP_MIN;
   }
-  return { out, total: t, stops: items.length };
+  return { out, total: t, km, stops: items.length };
 }
 const runOf = (date, session) => get('SELECT * FROM delivery_runs WHERE date=? AND session=?', [date, session]);
 const delayOf = (r, now = Date.now()) => (r.paused_ms || 0) + (r.paused_at ? now - r.paused_at : 0); // time lost to pauses so far
 const runView = async (date, session) => {
   const r = await runOf(date, session), e = await etaOffsets(date, session);
   const marked = [...e.out.values()].filter((x) => x.marked).length;
-  return { date, session, run: r || null, stops: e.stops, marked, farm: !!(await getSetting('farm_location', null)), minutes: Math.round(e.total),
+  return { date, session, run: r || null, stops: e.stops, marked, farm: !!(await getSetting('farm_location', null)), minutes: Math.round(e.total), km: Math.round(e.km * 10) / 10,
     finish_at: r && r.started && !r.ended ? r.started + delayOf(r) + e.total * 60000 : null };
 };
-route('GET', '/api/run', async ({ q }) => { need(['AM', 'PM'].includes(q.session), 'session must be AM or PM'); return runView(today(), q.session); });
+route('GET', '/api/run', async ({ q, user }) => { need(['AM', 'PM'].includes(q.session), 'session must be AM or PM'); checkShift(user, q.session); return runView(today(), q.session); });
 route('POST', '/api/run/(start|pause|resume|end)', async ({ m, body, user }) => {
-  need(['AM', 'PM'].includes(body.session), 'session must be AM or PM');
+  need(['AM', 'PM'].includes(body.session), 'session must be AM or PM'); checkShift(user, body.session);
   const d = today(), r = await runOf(d, body.session), now = Date.now();
   if (m[1] === 'start') {
     need(!r || r.ended, 'Delivery has already started');
@@ -463,8 +469,8 @@ route('PUT', '/api/locations/farm', async ({ body, user }) => {
   if (user.role !== 'admin') need(!(await getSetting('farm_location', null)), 'Only the admin can change the saved start location');
   await setSetting('farm_location', { ...l, marked: new Date().toISOString() }); return { ok: true }; });
 route('DELETE', '/api/locations/farm', async () => { await run("DELETE FROM settings WHERE key='farm_location'"); return { ok: true }; });
-route('PUT', '/api/locations/order', async ({ body }) => {
-  need(['AM', 'PM'].includes(body.session), 'session must be AM or PM');
+route('PUT', '/api/locations/order', async ({ body, user }) => {
+  need(['AM', 'PM'].includes(body.session), 'session must be AM or PM'); checkShift(user, body.session);
   need(Array.isArray(body.ids) && body.ids.length <= 2000, 'ids must be a list');
   const known = new Set((await all('SELECT id FROM customers')).map((r) => r.id));
   const ids = [...new Set(body.ids.map(String))].filter((id) => known.has(id));
@@ -479,18 +485,21 @@ route('PUT', '/api/locations/([^/]+)', async ({ body, m, user }) => {
 });
 route('DELETE', '/api/locations/([^/]+)', async ({ m }) => { await run('DELETE FROM customer_locations WHERE customer_id=?', [m[1]]); return { ok: true }; });
 route('GET', '/api/me', async ({ user }) => {
-  const me = { role: user.role, today: today(), yesterday: yesterday() };
+  const me = { role: user.role, today: today(), yesterday: yesterday(), shift: user.shift };
   if (user.role === 'customer') { const c = await get('SELECT id, bill_name FROM customers WHERE id=?', [user.cid]); Object.assign(me, { cid: user.cid, name: c && c.bill_name }); }
   if (user.role === 'admin') me.nav_order = await getSetting('nav_order', []);
   return me;
 });
+route('GET', '/api/logins', async () => { const have = new Set((await all('SELECT role FROM users')).map((r) => r.role)); return { delivery: have.has('delivery'), delivery_am: have.has('delivery_am'), delivery_pm: have.has('delivery_pm') }; });
 route('POST', '/api/logout', async ({ user }) => { await run('DELETE FROM sessions WHERE token=?', [user.token]); return { ok: true, clear: true }; });
 route('PUT', '/api/password', async ({ body, user }) => {
   need(user.role === 'admin', 'Admin only');
-  need(['admin', 'delivery'].includes(body.role), 'unknown account');
+  need(['admin', 'delivery', 'delivery_am', 'delivery_pm'].includes(body.role), 'unknown account');
   need(String(body.password || '').length >= 6, 'Password must be at least 6 characters');
   await setPassword(body.role, body.password);
-  await run('DELETE FROM sessions WHERE role=? AND token<>?', [body.role, user.token]); // sign out other devices on that account
+  // sign out other devices on that account (the three delivery logins are told apart by their shift)
+  if (body.role === 'admin') await run('DELETE FROM sessions WHERE role=? AND token<>?', ['admin', user.token]);
+  else await run("DELETE FROM sessions WHERE role='delivery' AND COALESCE(shift,'BOTH')=?", [{ delivery: 'BOTH', delivery_am: 'AM', delivery_pm: 'PM' }[body.role]]);
   return { ok: true };
 });
 
@@ -627,7 +636,8 @@ const skipRow = (k) => ({ id: k.id, customer_id: k.customer_id, name: k.name, se
 route('GET', '/api/notices', async ({ user }) => {
   const rows = await all("SELECT k.*, c.name FROM skips k JOIN customers c ON c.id=k.customer_id WHERE k.status='active' AND k.to_date >= ? ORDER BY k.from_date, c.id", [today()]);
   const requests = user.role === 'admin' ? await qtyRequests("r.status='Pending'") : [];
-  return { today: today(), tomorrow: tomorrow(), items: rows.map(skipRow), requests };
+  const mine = (k) => !user.shift || user.shift === 'BOTH' || sessionsOf(k.session).includes(user.shift); // morning staff see morning no-milk requests only
+  return { today: today(), tomorrow: tomorrow(), items: rows.filter(mine).map(skipRow), requests };
 });
 // customer asks for more or less milk on one delivery; the usual quantity for that day comes along so the admin sees the change
 async function qtyRequests(where, args = []) {
@@ -857,9 +867,9 @@ const APP_VERSION = process.env.VERCEL_DEPLOYMENT_ID || process.env.VERCEL_GIT_C
 const cookieOf = (req, name) => (req.headers.cookie || '').split(/;\s*/).map((c) => c.split('=')).find((c) => c[0] === name)?.[1];
 async function sessionOf(req) {
   const t = cookieOf(req, 'grv_sid'); if (!t) return null;
-  const r = await get('SELECT role, created, cid FROM sessions WHERE token=?', [t]);
+  const r = await get('SELECT role, created, cid, shift FROM sessions WHERE token=?', [t]);
   if (!r || Date.now() - r.created > SESSION_MS) return null;
-  return { token: t, role: r.role, cid: r.cid };
+  return { token: t, role: r.role, cid: r.cid, shift: r.role === 'delivery' ? r.shift || 'BOTH' : null };
 }
 const readBody = (req) => new Promise((resolve, reject) => {
   if (req.body !== undefined) return resolve(typeof req.body === 'string' ? req.body : req.body && Object.keys(req.body).length ? JSON.stringify(req.body) : '');
@@ -885,9 +895,17 @@ async function handle(req, res) {
       const f = await get('SELECT n, until FROM login_fails WHERE ip=?', [ip]);
       const fAll = await get('SELECT n, until FROM login_fails WHERE ip=?', ['all|' + baseIp]); // stops one device cycling through many customer IDs
       need(!(f && f.n >= 5 && f.until > Date.now()) && !(fAll && fAll.n >= 20 && fAll.until > Date.now()), 'Too many attempts - wait a minute and try again');
-      let ok, u;
+      let ok, u, shift = null;
       if (isCust) { ok = !!(await exists('customers', cid)) && await customerPwOk(cid, b.password); u = { role: 'customer' }; }
-      else { u = await get('SELECT * FROM users WHERE role=?', [String(b.role)]); ok = u && crypto.timingSafeEqual(Buffer.from(hashPw(b.password ?? '', u.salt), 'hex'), Buffer.from(u.hash, 'hex')); }
+      else {
+        // delivery staff pick Morning / Evening / Both on the sign-in page; each has its own password (Both = the original delivery password)
+        if (b.role === 'delivery') shift = ['AM', 'PM'].includes(b.shift) ? b.shift : 'BOTH';
+        const acct = b.role === 'delivery' && shift !== 'BOTH' ? 'delivery_' + shift.toLowerCase() : String(b.role);
+        u = await get('SELECT * FROM users WHERE role=?', [acct]);
+        if (!u && b.role === 'delivery') throw Object.assign(new Error(`The ${shift === 'AM' ? 'morning' : shift === 'PM' ? 'evening' : ''} delivery login is not set up yet. Ask the admin to set its password in Settings.`), { status: 401 });
+        ok = u && crypto.timingSafeEqual(Buffer.from(hashPw(b.password ?? '', u.salt), 'hex'), Buffer.from(u.hash, 'hex'));
+        if (u) u = { role: b.role === 'delivery' ? 'delivery' : u.role };
+      }
       if (!ok) {
         await run('INSERT OR REPLACE INTO login_fails(ip,n,until) VALUES(?,?,?)', [ip, (f && f.until > Date.now() ? f.n : 0) + 1, Date.now() + 60000]);
         await run('INSERT OR REPLACE INTO login_fails(ip,n,until) VALUES(?,?,?)', ['all|' + baseIp, (fAll && fAll.until > Date.now() ? fAll.n : 0) + 1, Date.now() + 60000]);
@@ -896,8 +914,8 @@ async function handle(req, res) {
       await run('DELETE FROM login_fails WHERE ip=?', [ip]);
       await run('DELETE FROM sessions WHERE created < ?', [Date.now() - SESSION_MS]);
       const token = crypto.randomBytes(32).toString('hex');
-      await run('INSERT INTO sessions(token,role,created,cid) VALUES(?,?,?,?)', [token, u.role, Date.now(), cid]);
-      return send(200, JSON.stringify({ role: u.role }), undefined, { 'Set-Cookie': `grv_sid=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_MS / 1000}${secure}` });
+      await run('INSERT INTO sessions(token,role,created,cid,shift) VALUES(?,?,?,?,?)', [token, u.role, Date.now(), cid, shift]);
+      return send(200, JSON.stringify({ role: u.role, shift }), undefined, { 'Set-Cookie': `grv_sid=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_MS / 1000}${secure}` });
     }
     const user = await sessionOf(req);
     if (!user) throw Object.assign(new Error('Please sign in'), { status: 401 });

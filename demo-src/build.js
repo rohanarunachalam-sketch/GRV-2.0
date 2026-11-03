@@ -26,6 +26,7 @@ esbuild.buildSync({
     'process.env.APP_TZ': '"Asia/Kolkata"', 'process.env.BILL_UPDATE_HOUR': 'undefined',
     'process.env.VERCEL_DEPLOYMENT_ID': 'undefined', 'process.env.VERCEL_GIT_COMMIT_SHA': 'undefined',
     'process.env.ADMIN_PASSWORD': '"admin123"', 'process.env.DELIVERY_PASSWORD': '"delivery123"',
+    'process.env.DELIVERY_AM_PASSWORD': '"morning123"', 'process.env.DELIVERY_PM_PASSWORD': '"evening123"',
   },
 });
 

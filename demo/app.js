@@ -229,7 +229,8 @@ const D = { view: innerWidth < 800 ? 'cards' : 'day', date: null, session: 'AM',
 // Phone-friendly cards: one per customer for a date + session, with − / + and Absent. Used by delivery staff and admin.
 const R = { session: new Date().getHours() < 14 ? 'AM' : 'PM', date: null, filter: '' };
 async function routeView(v) {
-  const staff = S.user.role !== 'admin';
+  const staff = S.user.role !== 'admin', only = staff && ['AM', 'PM'].includes(S.user.shift) ? S.user.shift : null; // morning-only / evening-only delivery login
+  if (only) R.session = only;
   if (staff || !R.date) R.date = (R.date && (!staff || [S.user.today, S.user.yesterday].includes(R.date))) ? R.date : (staff ? S.user.today : monthDefaultDate());
   const data = await api(`route?date=${R.date}&session=${R.session}`);
   const items = data.items;
@@ -263,7 +264,7 @@ async function routeView(v) {
   };
   for (const it of items) cardsBox.append(card(it));
   const search = h('input', { type: 'search', placeholder: 'Search customer…', class: 'grow', value: R.filter, oninput: (e) => { R.filter = e.target.value.toLowerCase(); for (const c of cardsBox.children) c.hidden = !c.dataset.name.includes(R.filter); } });
-  const sessionSeg = h('div', { class: 'seg' }, ['AM', 'PM'].map((s) => h('button', { class: R.session === s ? 'on' : '', onclick: () => { R.session = s; rerender(); } }, s)));
+  const sessionSeg = only ? h('b', { class: 'shift-pill' }, only === 'AM' ? '🌅 Morning' : '🌇 Evening') : h('div', { class: 'seg' }, ['AM', 'PM'].map((s) => h('button', { class: R.session === s ? 'on' : '', onclick: () => { R.session = s; rerender(); } }, s)));
   const rerender = () => { v.innerHTML = ''; routeView(v).catch((e) => v.append(h('p', { class: 'bad' }, e.message))); };
   const dateCtl = staff
     ? h('div', { class: 'seg' }, [[S.user.today, 'Today'], [S.user.yesterday, 'Yesterday']].map(([d, l]) => h('button', { class: R.date === d ? 'on' : '', onclick: () => { R.date = d; rerender(); } }, l)))
@@ -278,10 +279,12 @@ async function routeView(v) {
 }
 
 // ▶ Start / ⏸ Pause / ✓ Finish for today's round (admin + delivery). Starting is what makes customers see their delivery time.
+const dur = (min) => { const hr = Math.floor(min / 60), m = Math.round(min % 60); return hr ? `${hr} hr${m ? ' ' + m + ' min' : ''}` : `${m} min`; };
 const clock = (ms) => new Date(ms).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
 function runControl(session) {
   const box = h('div', { class: 'run-box' });
   const name = session === 'AM' ? 'Morning' : 'Evening';
+  const full = (d) => h('div', { class: 'run-full' }, `⏱ Full round: about ${dur(d.minutes)}`, h('span', {}, ` · ${d.stops} houses` + (d.km ? ` · ${d.km} km` : '')));
   const who = (r) => (r.last_by ? ` by ${r.last_by === 'admin' ? 'Admin' : 'Delivery'}` : '');
   // the same round is shared by admin and delivery: re-check every 10 s and when the phone wakes, so a Start / Pause on one login shows on the other
   let timer = null;
@@ -304,16 +307,16 @@ function runControl(session) {
     if (!r || r.ended) {
       box.className = 'run-box';
       box.append(h('div', { class: 'run-state' }, r ? `✓ ${name} delivery finished at ${clock(r.ended)}${who(r)}` : `${name} delivery not started`),
-        h('div', { class: 'tag' }, `${d.stops} stops · about ${d.minutes} min`),
+        full(d),
         h('button', { class: 'pri run-big', onclick: act('start', r ? `Start the ${name.toLowerCase()} delivery again?` : null) }, `▶ Start ${name} delivery`));
     } else if (r.paused_at) {
       box.className = 'run-box paused';
-      box.append(h('div', { class: 'run-state' }, `⏸ Paused since ${clock(r.paused_at)}${who(r)}`), h('div', { class: 'tag' }, 'Customers are not told about the pause — their time just moves 1 minute later for every minute you are paused.'),
+      box.append(h('div', { class: 'run-state' }, `⏸ Paused since ${clock(r.paused_at)}${who(r)}`), full(d), h('div', { class: 'tag' }, 'Customers are not told about the pause — their time just moves 1 minute later for every minute you are paused.'),
         h('div', { class: 'ract' }, h('button', { class: 'pri run-big', onclick: act('resume') }, '▶ Resume'), h('button', { onclick: act('end', `Finish the ${name.toLowerCase()} delivery?`) }, '✓ Finish')));
     } else {
       box.className = 'run-box on';
       box.append(h('div', { class: 'run-state' }, `🟢 ${name} delivery ${r.paused_ms ? 'running' : 'started'} — since ${clock(r.started)}${who(r)}`),
-        h('div', { class: 'tag' }, (d.finish_at ? `Expected to finish around ${clock(d.finish_at)}` : '') + (r.paused_ms ? ` · paused ${Math.round(r.paused_ms / 60000)} min so far` : '')),
+        full(d), h('div', { class: 'tag' }, (d.finish_at ? `Expected to finish around ${clock(d.finish_at)}` : '') + (r.paused_ms ? ` · paused ${Math.round(r.paused_ms / 60000)} min so far` : '')),
         h('div', { class: 'ract' }, h('button', { class: 'run-big', onclick: act('pause') }, '⏸ Pause'), h('button', { onclick: act('end', `Finish the ${name.toLowerCase()} delivery? Customers stop seeing a time.`) }, '✓ Finish')));
     }
     if (warn) box.append(h('div', { class: 'tag bad', style: 'margin-top:8px' }, warn));
@@ -696,10 +699,12 @@ pages.settings = async (v) => {
   for (const a of Object.values(areas)) a.style.cssText = 'display:block;width:100%;margin-top:6px';
   const pwBox = (role, label) => {
     const i = h('input', { type: 'text', placeholder: 'New password (min 6 characters)', autocomplete: 'off' });
-    return h('div', { class: 'bar' }, h('b', { style: 'width:90px' }, label), i, h('button', { onclick: guard(async () => { await api('password', 'PUT', { role, password: i.value }); i.value = ''; toast(label + ' password changed'); }) }, 'Change'));
+    return h('div', { class: 'bar' }, h('b', { style: 'width:170px' }, label), i, h('button', { onclick: guard(async () => { await api('password', 'PUT', { role, password: i.value }); i.value = ''; toast(label + ' password saved'); render(); }) }, 'Save'));
   };
-  v.append(h('h2', {}, 'Logins'), h('p', { class: 'sub' }, 'The delivery login only sees today\'s and yesterday\'s delivery list — no prices, bills or reports. Changing a password signs that account out on other phones.'),
-    h('div', { class: 'card' }, pwBox('delivery', 'Delivery'), pwBox('admin', 'Admin')),
+  const logins = await api('logins');
+  const st = (k) => h('span', { class: 'tag ' + (logins[k] ? 'good' : 'bad'), style: 'width:100%' }, logins[k] ? '✓ set' : '⚠ not set yet — this login cannot sign in');
+  v.append(h('h2', {}, 'Logins'), h('p', { class: 'sub' }, 'Delivery staff choose Morning, Evening or Both when they sign in, and each has its own password. A Morning login sees only morning customers, notices and route; Evening only evening. Delivery logins only see today\'s and yesterday\'s list — no prices, bills or reports. Changing a password signs that login out on other phones.'),
+    h('div', { class: 'card' }, pwBox('delivery_am', '🌅 Morning delivery'), st('delivery_am'), pwBox('delivery_pm', '🌇 Evening delivery'), st('delivery_pm'), pwBox('delivery', '🌅🌇 Both (delivery)'), pwBox('admin', 'Admin')),
     h('h2', {}, 'Download data'), h('p', { class: 'sub' }, 'All customers, deliveries, payments, income, expenses, cows, cow yield, AI records and pauses in one Excel (.xlsx) file, one sheet per table. Passwords are not included.'),
     h('div', { class: 'card' }, h('button', { class: 'pri', onclick: guard(downloadExcel) }, 'Download all data (.xlsx)')));
 };
@@ -911,6 +916,8 @@ const L = { session: new Date().getHours() < 14 ? 'AM' : 'PM', filter: '', edit:
 pages.locations = async (v) => {
   const d = await api('locations'), farm = d.farm, admin = S.user.role === 'admin'; // delivery staff: mark new houses only; order and changes stay with the admin
   if (!admin) L.edit = false;
+  const only = !admin && ['AM', 'PM'].includes(S.user.shift) ? S.user.shift : null;
+  if (only) L.session = only;
   const byId = new Map(d.customers.map((c) => [c.id, c]));
   const has = (c) => c && c.lat != null;
   const inSession = (c) => c.status === 'Active' && (L.session === 'AM' ? c.am : c.pm) > 0;
@@ -994,7 +1001,7 @@ pages.locations = async (v) => {
   const active = d.customers.filter((c) => c.status === 'Active' && (c.am > 0 || c.pm > 0)), doneN = active.filter(has).length;
   const allDone = farm && doneN === active.length;
 
-  const sessSeg = h('div', { class: 'seg' }, [['AM', '🌅 Morning'], ['PM', '🌇 Evening']].map(([k, l]) => h('button', { class: L.session === k ? 'on' : '', onclick: () => { L.session = k; render(); } }, l)));
+  const sessSeg = only ? h('b', { class: 'shift-pill' }, only === 'AM' ? '🌅 Morning' : '🌇 Evening') : h('div', { class: 'seg' }, [['AM', '🌅 Morning'], ['PM', '🌇 Evening']].map(([k, l]) => h('button', { class: L.session === k ? 'on' : '', onclick: () => { L.session = k; render(); } }, l)));
   const search = h('input', { type: 'search', placeholder: 'Find customer (name or ID)', value: L.filter, oninput: (e) => { L.filter = e.target.value; draw(); } });
   v.append(h('h1', {}, admin ? 'Location Tracker' : 'Locations'),
     h('p', { class: 'sub' }, 'One-time setup. Step 1: mark the place where delivery starts. Step 2: go to each customer’s house and mark it. The saved locations are kept and used for the delivery order and for the time customers see — no live tracking.'),
@@ -1359,14 +1366,18 @@ function showLogin() {
   const title = { customer: 'Customer sign in', delivery: 'Delivery sign in', admin: 'Admin sign in' }[mode];
   const id = h('input', { type: 'text', placeholder: 'e.g. GRV001', autocapitalize: 'characters', autocomplete: 'username', required: true, value: localStorage.getItem('grv.cid') || '' });
   const pw = h('input', { type: 'password', placeholder: 'Password', autocomplete: 'current-password', required: true });
+  const shiftCh = mode === 'delivery' ? choices('Which delivery do you do?', [['AM', '🌅 Morning'], ['PM', '🌇 Evening'], ['BOTH', '🌅🌇 Both']]) : null;
+  if (shiftCh) { let last = null; try { last = localStorage.getItem('grv.shift'); } catch {} const r = last && shiftCh.querySelector(`input[value="${last}"]`); if (r) r.checked = true; }
   const form = h('form', { class: 'login form', onsubmit: guard(async (e) => {
     e.preventDefault();
-    await api('login', 'POST', { role: mode, id: id.value, password: pw.value });
+    if (shiftCh && !shiftCh.need()) return;
+    await api('login', 'POST', { role: mode, id: id.value, password: pw.value, shift: shiftCh ? shiftCh.value : undefined });
+    if (shiftCh) try { localStorage.setItem('grv.shift', shiftCh.value); } catch {}
     if (mode === 'customer') localStorage.setItem('grv.cid', id.value.trim().toUpperCase());
     S.lists = null; S.user = null; render();
   }) }, mode === 'customer' && isDiwali() ? diwaliPoster() : null, h('img', { class: 'logo big', src: 'logo.png', alt: 'GRV Dairy' }), h('h1', { style: 'text-align:center;font-size:19px;margin-bottom:2px' }, title),
     h('p', { class: 'tag' }, mode === 'customer' ? 'Fresh milk, delivered daily' : 'GRV Dairy staff'),
-    mode === 'customer' ? h('label', {}, 'Customer ID', id) : null, h('label', {}, 'Password', pwBox(pw)), h('button', { class: 'pri', type: 'submit' }, 'Sign in'));
+    mode === 'customer' ? h('label', {}, 'Customer ID', id) : null, shiftCh, h('label', {}, 'Password', pwBox(pw)), h('button', { class: 'pri', type: 'submit' }, 'Sign in'));
   v.append(form); (mode === 'customer' && !id.value ? id : pw).focus();
   if (mode === 'customer' && isDiwali()) diwaliFireworks();
 }
@@ -1390,7 +1401,7 @@ async function render() {
   const links = admin ? navInOrder() : role === 'delivery' ? DELIVERY_NAV : [];
   for (const [k, l] of links) nav.append(h('a', { href: '#/' + k, class: k === page || (page === 'bill' && k === 'bills') ? 'on' : '' }, l));
   $('#menu').hidden = !links.length; $('.month').hidden = !admin;
-  $('#who').textContent = { admin: 'Admin', delivery: 'Delivery', customer: S.user.cid }[role];
+  $('#who').textContent = { admin: 'Admin', delivery: { AM: 'Morning delivery', PM: 'Evening delivery' }[S.user.shift] || 'Delivery', customer: S.user.cid }[role];
   document.body.classList.toggle('customer', role === 'customer');
   const v = $('#view'); v.innerHTML = '';
   v.append = (...kids) => Element.prototype.append.apply(v, kids.flat().filter((k) => k != null && k !== false)); // pages may pass null for "nothing"

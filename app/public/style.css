@@ -526,3 +526,7 @@ button.run-big{min-height:52px;font-size:17px;border-radius:12px}
 @keyframes cs-road{to{transform:translateX(-44px)}}
 @keyframes cs-hills{to{transform:translateX(-20px)}}
 @media (prefers-reduced-motion:reduce){.cart-scene *{animation:none!important}}
+/* full round time + fixed-shift label */
+.run-full{font-weight:700;font-size:15px;margin:2px 0}
+.run-full span{font-weight:500;color:var(--mute)}
+.shift-pill{display:inline-flex;align-items:center;padding:6px 14px;border-radius:11px;background:var(--brand-l);color:var(--brand);font-size:14px}
