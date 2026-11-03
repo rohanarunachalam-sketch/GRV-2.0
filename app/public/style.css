@@ -408,6 +408,23 @@ a.btn:hover{background:var(--brand-xl)}
 .gps-warn{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:var(--bad-l);border:1.5px solid var(--bad);color:var(--bad);border-radius:12px;padding:12px 14px;margin:0 0 14px;animation:shake .4s}
 .gps-help p{font-size:15px;line-height:1.5}
 .gps-acc{font-size:18px!important;font-weight:700;color:var(--brand);margin:14px 0 4px}
+/* delivery round: Start / Pause / Finish */
+.run-box{background:var(--card);border:2px solid var(--line);border-radius:var(--r);padding:14px 16px;margin:0 0 14px;box-shadow:var(--shadow)}
+.run-box.on{border-color:var(--brand-m);background:var(--brand-l)}
+.run-box.paused{border-color:#f2c230;background:#fff7d6}
+.run-state{font-weight:800;font-size:16px;margin-bottom:2px}
+.run-box .ract{display:flex;gap:8px;margin-top:10px}
+.run-box .ract button{flex:1;min-height:48px;font-size:16px;border-radius:12px}
+button.run-big{min-height:52px;font-size:17px;border-radius:12px}
+.run-box>button.run-big{width:100%;margin-top:10px}
+.run-pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+/* customer: approximate delivery time */
+.eta-card{border-radius:16px;padding:16px 18px;margin:0 0 14px;background:linear-gradient(135deg,#e6f5ec,#d4eedd);border:1.5px solid #9fd3b2;color:#0f4d2b}
+.eta-card.paused{background:#fff7d6;border-color:#f2c230;color:#6b4700}
+.eta-card.finished{background:var(--card);border-color:var(--line);color:var(--mute)}
+.eta-l{font-weight:700;font-size:15px}
+.eta-t{font-size:28px;font-weight:800;letter-spacing:-.01em;margin:4px 0;font-variant-numeric:tabular-nums}
+.eta-card .tag{color:inherit;opacity:.8}
 /* customer No milk: tap-to-pick calendar */
 .pick-cal{margin:4px 0 8px;border:2px solid var(--line)}
 .pick-cal.missing{border-color:var(--bad);background:var(--bad-l);animation:shake .4s}

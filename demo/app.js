@@ -270,10 +270,42 @@ async function routeView(v) {
     : h('input', { type: 'date', value: R.date, onchange: (e) => { if (e.target.value) { R.date = e.target.value; rerender(); } } });
   v.append(h('h1', {}, 'Deliveries'), h('p', { class: 'sub' }, `${dayLabel(R.date)} · ${R.session === 'AM' ? 'Morning' : 'Evening'}. Customers get their usual quantity unless you change it.`),
     staff ? null : h('div', { class: 'bar' }, viewTabs(() => { v.innerHTML = ''; pages.delivery(v); })),
+    R.date === S.user.today ? runControl(R.session) : null,
     h('div', { class: 'bar sticky' }, dateCtl, sessionSeg, search), h('div', { class: 'bar' }, prog), cardsBox);
   if (R.filter) for (const c of cardsBox.children) c.hidden = !c.dataset.name.includes(R.filter);
   if (!items.length) cardsBox.append(h('p', { class: 'mute' }, 'No customers for this session.'));
   stats();
+}
+
+// ▶ Start / ⏸ Pause / ✓ Finish for today's round (admin + delivery). Starting is what makes customers see their delivery time.
+const clock = (ms) => new Date(ms).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
+function runControl(session) {
+  const box = h('div', { class: 'run-box' });
+  const name = session === 'AM' ? 'Morning' : 'Evening';
+  const act = (what, ask) => guard(async () => { if (ask && !confirm(ask)) return; paint(await api('run/' + what, 'POST', { session })); toast({ start: 'Delivery started — customers can now see their time', pause: 'Paused — customers’ times will move later', resume: 'Resumed — times updated', end: 'Delivery finished' }[what]); });
+  const paint = (d) => {
+    box.innerHTML = '';
+    const r = d.run, warn = !d.farm ? '⚠ Start location not marked — customers won’t see a time. Mark it on the Locations page.'
+      : d.marked < d.stops ? `⚠ ${d.stops - d.marked} of ${d.stops} houses not marked yet — those customers won’t see a time.` : null;
+    if (!r || r.ended) {
+      box.className = 'run-box';
+      box.append(h('div', { class: 'run-state' }, r ? `✓ ${name} delivery finished at ${clock(r.ended)}` : `${name} delivery not started`),
+        h('div', { class: 'tag' }, `${d.stops} stops · about ${d.minutes} min`),
+        h('button', { class: 'pri run-big', onclick: act('start', r ? `Start the ${name.toLowerCase()} delivery again?` : null) }, `▶ Start ${name} delivery`));
+    } else if (r.paused_at) {
+      box.className = 'run-box paused';
+      box.append(h('div', { class: 'run-state' }, `⏸ Paused since ${clock(r.paused_at)}`), h('div', { class: 'tag' }, 'Customers are told the delivery is paused. Their times move later by the time you are paused.'),
+        h('div', { class: 'ract' }, h('button', { class: 'pri run-big', onclick: act('resume') }, '▶ Resume'), h('button', { onclick: act('end', `Finish the ${name.toLowerCase()} delivery?`) }, '✓ Finish')));
+    } else {
+      box.className = 'run-box on';
+      box.append(h('div', { class: 'run-state' }, `🟢 ${name} delivery started at ${clock(r.started)}`),
+        h('div', { class: 'tag' }, (d.finish_at ? `Expected to finish around ${clock(d.finish_at)}` : '') + (r.paused_ms ? ` · paused ${Math.round(r.paused_ms / 60000)} min so far` : '')),
+        h('div', { class: 'ract' }, h('button', { class: 'run-big', onclick: act('pause') }, '⏸ Pause'), h('button', { onclick: act('end', `Finish the ${name.toLowerCase()} delivery? Customers stop seeing a time.`) }, '✓ Finish')));
+    }
+    if (warn) box.append(h('div', { class: 'tag bad', style: 'margin-top:8px' }, warn));
+  };
+  api('run?session=' + session).then(paint, (e) => { box.textContent = e.message; });
+  return box;
 }
 
 // Cards / Table / Month grid switch for admin, shown on every delivery view.
@@ -355,7 +387,8 @@ pages.delivery = async (v) => {
           days.map((n) => { const i = qInput(c, dayStr(n), D.session); i.addEventListener('change', upd); return h('td', { class: 'gridcell' }, i); }), tot);
       }))));
   }
-  v.append(h('h1', {}, 'Delivery'), h('p', { class: 'sub' }, 'Leave a box blank to use the default quantity. Enter 0 for no delivery. Yellow boxes are changes from default.'), bar, body);
+  v.append(h('h1', {}, 'Delivery'), h('p', { class: 'sub' }, 'Leave a box blank to use the default quantity. Enter 0 for no delivery. Yellow boxes are changes from default.'),
+    h('div', { class: 'run-pair' }, runControl('AM'), runControl('PM')), bar, body);
   refreshTotals();
 };
 
@@ -862,7 +895,8 @@ function autoOrder(stops, farm) {
 }
 const L = { session: new Date().getHours() < 14 ? 'AM' : 'PM', filter: '', edit: false };
 pages.locations = async (v) => {
-  const d = await api('locations'), farm = d.farm;
+  const d = await api('locations'), farm = d.farm, admin = S.user.role === 'admin'; // delivery staff: mark new houses only; order and changes stay with the admin
+  if (!admin) L.edit = false;
   const byId = new Map(d.customers.map((c) => [c.id, c]));
   const has = (c) => c && c.lat != null;
   const inSession = (c) => c.status === 'Active' && (L.session === 'AM' ? c.am : c.pm) > 0;
@@ -900,10 +934,10 @@ pages.locations = async (v) => {
       const move = (to) => { if (to < 0 || to >= order.length || to === i) return; order.splice(to, 0, ...order.splice(i, 1)); draw(); save(); };
       listBox.append(h('div', { class: 'rcard loc-card' + (has(c) ? '' : ' nomark') },
         h('div', { class: 'rtop' },
-          h('button', { class: 'loc-no', title: 'Move to position…', disabled: filtering, onclick: () => { const n = Number(prompt(`Move ${c.name} to which position? (1–${order.length})`, i + 1)); if (n >= 1) move(Math.min(n, order.length) - 1); } }, i + 1),
+          h('button', { class: 'loc-no', title: admin ? 'Move to position…' : '', disabled: filtering || !admin, onclick: () => { const n = Number(prompt(`Move ${c.name} to which position? (1–${order.length})`, i + 1)); if (n >= 1) move(Math.min(n, order.length) - 1); } }, i + 1),
           h('div', { style: 'flex:1;min-width:0' }, h('div', { class: 'rname' }, c.name), h('div', { class: 'tag' }, c.id + ' · ' + lit(L.session === 'AM' ? c.am : c.pm) + ' L'),
             h('div', { class: 'tag ' + (has(c) ? 'good' : 'bad') }, has(c) ? `📍 Marked${c.acc != null ? ' ±' + c.acc + ' m' : ''}` + (leg != null ? ` · ${distText(leg)} from ${from}` : '') : '⚠ Location not marked')),
-          h('div', { class: 'loc-move' }, h('button', { 'aria-label': 'Move up', disabled: filtering || i === 0, onclick: () => move(i - 1) }, '↑'), h('button', { 'aria-label': 'Move down', disabled: filtering || i === order.length - 1, onclick: () => move(i + 1) }, '↓'))),
+          !admin ? null : h('div', { class: 'loc-move' }, h('button', { 'aria-label': 'Move up', disabled: filtering || i === 0, onclick: () => move(i - 1) }, '↑'), h('button', { 'aria-label': 'Move down', disabled: filtering || i === order.length - 1, onclick: () => move(i + 1) }, '↓'))),
         h('div', { class: 'ract' },
           // one-time setup: a saved house is locked; Re-mark / Clear only show in "Change saved locations" mode
           !has(c) ? h('button', { class: 'pri', disabled: !farm, onclick: () => mark(c.id, c.name)() }, farm ? '📍 Mark location here' : '🔒 Mark your start location first')
@@ -920,18 +954,19 @@ pages.locations = async (v) => {
 
   const sessSeg = h('div', { class: 'seg' }, [['AM', '🌅 Morning'], ['PM', '🌇 Evening']].map(([k, l]) => h('button', { class: L.session === k ? 'on' : '', onclick: () => { L.session = k; render(); } }, l)));
   const search = h('input', { type: 'search', placeholder: 'Find customer (name or ID)', value: L.filter, oninput: (e) => { L.filter = e.target.value; draw(); } });
-  v.append(h('h1', {}, 'Location Tracker'),
+  v.append(h('h1', {}, admin ? 'Location Tracker' : 'Locations'),
     h('p', { class: 'sub' }, 'One-time setup. Step 1: mark the place where delivery starts. Step 2: go to each customer’s house and mark it. The saved locations are kept and used for the delivery order and for the time customers see — no live tracking.'),
     h('div', { id: 'gps-banner' }),
-    allDone ? h('div', { class: 'loc-done' }, '✅ Setup complete — all locations are saved. ', h('button', { class: 'link', onclick: () => { L.edit = !L.edit; render(); } }, L.edit ? '🔒 Done changing' : '✏️ Change saved locations'))
-      : farm ? h('div', { class: 'bar' }, h('button', { class: 'link', onclick: () => { L.edit = !L.edit; render(); } }, L.edit ? '🔒 Done changing' : '✏️ Change saved locations')) : null,
+    allDone ? h('div', { class: 'loc-done' }, '✅ Setup complete — all locations are saved. ', admin ? h('button', { class: 'link', onclick: () => { L.edit = !L.edit; render(); } }, L.edit ? '🔒 Done changing' : '✏️ Change saved locations') : null)
+      : farm && admin ? h('div', { class: 'bar' }, h('button', { class: 'link', onclick: () => { L.edit = !L.edit; render(); } }, L.edit ? '🔒 Done changing' : '✏️ Change saved locations')) : null,
     h('div', { class: 'rcard loc-farm' + (farm ? '' : ' step-now') }, h('div', { class: 'step-no' }, 'Step 1'), h('div', { class: 'rname' }, '🏠 Start location (farm — where delivery starts)'),
       h('div', { class: 'tag ' + (farm ? 'good' : 'bad') }, farm ? `✓ Saved${farm.acc != null ? ' ±' + farm.acc + ' m' : ''}` : '⚠ Not marked yet — stand at the farm and tap the button'),
       !farm || L.edit ? h('div', { class: 'ract' }, h('button', { class: farm ? '' : 'pri', onclick: () => { if (farm && !confirm('Replace the start location with where you are standing now?')) return; mark('farm', 'Start location')(); } }, farm ? '📍 Re-mark start location' : '📍 Mark my start location here')) : null),
     h('div', { class: 'step-no', style: 'margin-top:4px' }, `Step 2 · Customer houses — ${doneN} of ${active.length} saved`),
     h('div', { class: 'loc-prog' }, h('div', { style: `width:${active.length ? Math.round(doneN / active.length * 100) : 0}%` })),
+    !admin ? h('p', { class: 'tag' }, 'You can mark houses that are not saved yet. To change a saved house or the order, ask the admin.') : null,
     h('div', { class: 'bar' }, sessSeg,
-      h('button', { class: 'pri', onclick: () => {
+      !admin ? null : h('button', { class: 'pri', onclick: () => {
         const marked = order.filter((id) => has(byId.get(id)));
         if (marked.length < 2) return toast('Mark at least 2 customer locations first', true);
         if (!confirm(`Put the ${marked.length} marked customers in the shortest order${farm ? ' from the farm' : ''}? Unmarked customers stay at the end. You can still move anyone after.`)) return;
@@ -963,6 +998,27 @@ pages.locations = async (v) => {
 };
 
 // ---------- customer portal ----------
+// "Your milk will arrive between 6:00 and 6:15 PM" — shown once today's delivery is started; checks again every minute
+let etaTimer = null;
+function etaCard() {
+  const box = h('div', { class: 'eta-card', hidden: true });
+  clearInterval(etaTimer);
+  const load = (first) => {
+    if (!first && !box.isConnected) { clearInterval(etaTimer); return; } // the page moved on
+    api('portal/eta').then((e) => {
+      box.innerHTML = '';
+      if (e.state === 'none') { box.hidden = true; return; }
+      const when = e.session === 'AM' ? 'morning' : 'evening', win = `${clock(e.from)} – ${clock(e.to)}`;
+      box.hidden = false; box.className = 'eta-card ' + e.state;
+      if (e.state === 'finished') box.append(h('div', { class: 'eta-l' }, `✓ Today’s ${when} delivery is finished`), h('div', { class: 'tag' }, 'Thank you! 🥛'));
+      else if (e.state === 'paused') box.append(h('div', { class: 'eta-l' }, '⏸ Delivery is paused for a few minutes'), h('div', { class: 'eta-t' }, win), h('div', { class: 'tag' }, 'Your time will move a little later. Sorry for the wait 🙏'), h('div', { class: 'tag', lang: 'ta' }, 'டெலிவரி சில நிமிடங்கள் நிறுத்தப்பட்டுள்ளது.'));
+      else if (e.state === 'late') box.append(h('div', { class: 'eta-l' }, '🛵 Your milk is on the way'), h('div', { class: 'tag' }, 'It is taking a little longer today. Sorry for the wait 🙏'));
+      else box.append(h('div', { class: 'eta-l' }, `🛵 Your ${when} milk will arrive between`), h('div', { class: 'eta-t' }, win), h('div', { class: 'tag', lang: 'ta' }, `உங்க பால் ${win} க்குள் வரும்`), h('div', { class: 'tag' }, 'Approximate time'));
+    }, () => {});
+  };
+  load(true); etaTimer = setInterval(() => load(false), 60000);
+  return box;
+}
 // Big round buttons that always show every choice. If nothing is picked the whole box turns red,
 // so a customer who can't read well still sees what is missing.
 function choices(title, opts) {
@@ -1030,7 +1086,7 @@ pages.portal = async (v) => {
   const again = () => { v.innerHTML = ''; pages.portal(v).catch((e) => v.append(h('p', { class: 'bad' }, e.message))); };
   if (isDiwali()) { v.append(diwaliPoster()); diwaliFireworks(); }
   const tabs = h('div', { class: 'seg' }, [['bill', 'My bill'], ['skip', 'No milk'], ['shop', 'GRV Shop'], ['account', 'Account']].map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
-  v.append(h('div', { class: 'who-card' }, h('div', { class: 'avatar' }, (d.customer.name || d.customer.id).trim()[0]?.toUpperCase() || '?'), h('div', {}, h('h1', {}, d.customer.name || 'Welcome'), h('div', { class: 'tag' }, `Customer ${d.customer.id}`))), d.needs_name ? nameForm(true) : null, h('div', { class: 'bar' }, tabs));
+  v.append(h('div', { class: 'who-card' }, h('div', { class: 'avatar' }, (d.customer.name || d.customer.id).trim()[0]?.toUpperCase() || '?'), h('div', {}, h('h1', {}, d.customer.name || 'Welcome'), h('div', { class: 'tag' }, `Customer ${d.customer.id}`))), d.needs_name ? nameForm(true) : null, etaCard(), h('div', { class: 'bar' }, tabs));
 
   if (P.tab === 'bill') {
     const upTo = d.cutoff < d.month + '-01' ? null : d.cutoff;
@@ -1190,7 +1246,7 @@ function monthCalendar(d) {
 const NAV = [['dashboard', 'Dashboard'], ['delivery', 'Delivery'], ['notices', 'Notices'], ['daily', 'Daily Summary'], ['bills', 'Bills'], ['customers', 'Customers'], ['income', 'Income'], ['expenses', 'Expenses'], ['pnl', 'P&L'], ['cows', 'Cows'], ['yield', 'Cow Yield'], ['extras', 'Extras'], ['locations', 'Location Tracker'], ['settings', 'Settings']];
 // the admin menu in the order picked in Settings; a page missing from the saved order keeps its default place at the end
 const navInOrder = () => { const saved = S.user.nav_order || []; return [...saved.map((k) => NAV.find((n) => n[0] === k)).filter(Boolean), ...NAV.filter((n) => !saved.includes(n[0]))]; };
-const DELIVERY_NAV = [['delivery', 'Deliveries'], ['notices', 'Notices']];
+const DELIVERY_NAV = [['delivery', 'Deliveries'], ['locations', 'Locations'], ['notices', 'Notices']];
 const hdr = $('header');
 
 // Each person has their own sign-in address: / = customers, /delivery = delivery staff, /admin = admin.
@@ -1225,7 +1281,7 @@ async function render() {
   const nav = $('#nav'); nav.innerHTML = ''; nav.classList.remove('open');
   let page;
   if (role === 'customer') page = 'portal';
-  else if (role === 'delivery') page = hashPage === 'notices' ? 'notices' : 'delivery';
+  else if (role === 'delivery') page = ['notices', 'locations'].includes(hashPage) ? hashPage : 'delivery';
   else page = hashPage || 'dashboard';
   // the red count bubbles load in the background so they never hold the page up
   const badgeP = Promise.all([

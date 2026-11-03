@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY AUTOINCREMENT, name T
 CREATE TABLE IF NOT EXISTS customer_plans(customer_id TEXT, from_date TEXT, am REAL DEFAULT 0, pm REAL DEFAULT 0, price REAL DEFAULT 0, status TEXT DEFAULT 'Active', PRIMARY KEY(customer_id, from_date));
 CREATE TABLE IF NOT EXISTS qty_requests(id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id TEXT, date TEXT, session TEXT, qty REAL, note TEXT DEFAULT '', status TEXT DEFAULT 'Pending', created TEXT, decided TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS customer_locations(customer_id TEXT PRIMARY KEY, lat REAL, lng REAL, acc REAL, marked TEXT);
+CREATE TABLE IF NOT EXISTS delivery_runs(date TEXT, session TEXT, started INTEGER, paused_at INTEGER, paused_ms INTEGER DEFAULT 0, ended INTEGER, started_by TEXT, PRIMARY KEY(date, session));
 CREATE TABLE IF NOT EXISTS product_orders(id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, customer_id TEXT, qty REAL, price REAL, date TEXT, status TEXT DEFAULT 'Booked', note TEXT DEFAULT '', created TEXT, created_by TEXT);
 `;
 
@@ -245,8 +246,10 @@ async function nextId(table, prefix, pad) {
 // ---- routing
 const routes = [];
 const route = (method, pattern, fn) => routes.push({ method, re: new RegExp('^' + pattern + '$'), fn });
+// delivery staff may also mark houses (Location Tracker) and start / pause / finish a delivery; the routes themselves stop them changing saved locations
+const deliveryExtra = (key) => key === 'GET /api/locations' || /^PUT \/api\/locations\/[^/]+$/.test(key) && key !== 'PUT /api/locations/order' || key === 'GET /api/run' || /^POST \/api\/run\/(start|pause|resume|end)$/.test(key);
 const DELIVERY_ALLOWED = new Set(['GET /api/me', 'POST /api/logout', 'GET /api/route', 'PUT /api/delivery', 'PUT /api/delivery/unavailable', 'GET /api/notices']);
-const roleAllows = (role, key) => role === 'admin' || (role === 'delivery' && DELIVERY_ALLOWED.has(key)) ||
+const roleAllows = (role, key) => role === 'admin' || (role === 'delivery' && (DELIVERY_ALLOWED.has(key) || deliveryExtra(key))) ||
   (role === 'customer' && (['GET /api/me', 'POST /api/logout'].includes(key) || key.split(' ')[1].startsWith('/api/portal')));
 // delivery staff may only touch today's and yesterday's entries
 const checkDeliveryDate = (user, date) => { if (user.role !== 'admin') need(date === today() || date === yesterday(), 'You can only edit today or yesterday'); };
@@ -350,6 +353,11 @@ route('POST', '/api/delivery/reset-day', async ({ body }) => { // clear all over
 // Delivery-boy friendly list for one date + session: no prices, phones or amounts.
 route('GET', '/api/route', async ({ q, user }) => {
   validDate(q.date); need(['AM', 'PM'].includes(q.session), 'session must be AM or PM'); checkDeliveryDate(user, q.date);
+  return { date: q.date, session: q.session, items: await routeList(q.date, q.session) };
+});
+// the delivery list for one date + session, in the saved Location Tracker order (also used for the customers' delivery times)
+async function routeList(date, session) {
+  const q = { date, session };
   const ov = new Map((await all('SELECT customer_id c, qty q FROM deliveries WHERE date=? AND session=?', [q.date, q.session])).map((r) => [r.c, r.q]));
   const unv = new Set((await all('SELECT customer_id c FROM milk_unavailable WHERE date=? AND session=?', [q.date, q.session])).map((r) => r.c));
   const skipBy = new Map();
@@ -364,7 +372,72 @@ route('GET', '/api/route', async ({ q, user }) => {
   // follow the delivery order saved on the Location Tracker page; customers not placed yet go last (by ID)
   const pos = new Map((await getSetting('route_order_' + q.session, [])).map((id, i) => [id, i]));
   items.sort((a, b) => (pos.get(a.id) ?? 1e9) - (pos.get(b.id) ?? 1e9));
-  return { date: q.date, session: q.session, items };
+  return items;
+}
+
+// ---- delivery times for customers: worked out only from the SAVED locations + the start time (no live tracking)
+const ROAD_FACTOR = 1.4, KMH = 18, STOP_MIN = 1.5, WINDOW_MIN = 15; // roads are ~40% longer than a straight line; ~18 km/h on a bike; ~1.5 min per house
+const kmBetween = (a, b) => {
+  const R = 6371, r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLng = (b.lng - a.lng) * r;
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+};
+// minutes after the start until each customer's milk arrives, following the delivery order
+async function etaOffsets(date, session) {
+  const items = (await routeList(date, session)).filter((it) => (it.qty ?? (it.skip ? 0 : it.def)) > 0 && !it.unavail);
+  const locs = new Map((await all('SELECT * FROM customer_locations')).map((r) => [r.customer_id, r]));
+  let prev = await getSetting('farm_location', null), t = 0;
+  const out = new Map();
+  for (const it of items) {
+    const l = locs.get(it.id);
+    if (l && prev) t += kmBetween(prev, l) * ROAD_FACTOR / KMH * 60;
+    if (l) prev = l;
+    out.set(it.id, { min: t, marked: !!l }); t += STOP_MIN;
+  }
+  return { out, total: t, stops: items.length };
+}
+const runOf = (date, session) => get('SELECT * FROM delivery_runs WHERE date=? AND session=?', [date, session]);
+const delayOf = (r, now = Date.now()) => (r.paused_ms || 0) + (r.paused_at ? now - r.paused_at : 0); // time lost to pauses so far
+const runView = async (date, session) => {
+  const r = await runOf(date, session), e = await etaOffsets(date, session);
+  const marked = [...e.out.values()].filter((x) => x.marked).length;
+  return { date, session, run: r || null, stops: e.stops, marked, farm: !!(await getSetting('farm_location', null)), minutes: Math.round(e.total),
+    finish_at: r && r.started && !r.ended ? r.started + delayOf(r) + e.total * 60000 : null };
+};
+route('GET', '/api/run', async ({ q }) => { need(['AM', 'PM'].includes(q.session), 'session must be AM or PM'); return runView(today(), q.session); });
+route('POST', '/api/run/(start|pause|resume|end)', async ({ m, body, user }) => {
+  need(['AM', 'PM'].includes(body.session), 'session must be AM or PM');
+  const d = today(), r = await runOf(d, body.session), now = Date.now();
+  if (m[1] === 'start') {
+    need(!r || r.ended, 'Delivery has already started');
+    await run('INSERT OR REPLACE INTO delivery_runs(date,session,started,paused_at,paused_ms,ended,started_by) VALUES(?,?,?,NULL,0,NULL,?)', [d, body.session, now, user.role]);
+  } else {
+    need(r && !r.ended, 'Delivery has not started');
+    if (m[1] === 'pause') { need(!r.paused_at, 'Already paused'); await run('UPDATE delivery_runs SET paused_at=? WHERE date=? AND session=?', [now, d, body.session]); }
+    if (m[1] === 'resume') { need(r.paused_at, 'Not paused'); await run('UPDATE delivery_runs SET paused_ms=?, paused_at=NULL WHERE date=? AND session=?', [delayOf(r, now), d, body.session]); }
+    if (m[1] === 'end') await run('UPDATE delivery_runs SET ended=?, paused_ms=?, paused_at=NULL WHERE date=? AND session=?', [now, delayOf(r, now), d, body.session]);
+  }
+  return runView(d, body.session);
+});
+// what a customer sees: a 15-minute window for today's started delivery — never where the delivery person is
+route('GET', '/api/portal/eta', async ({ user }) => {
+  const d = today(), now = Date.now(), loc = await get('SELECT 1 x FROM customer_locations WHERE customer_id=?', [user.cid]);
+  const farm = await getSetting('farm_location', null);
+  let best = null;
+  for (const s of ['AM', 'PM']) {
+    const r = await runOf(d, s); if (!r || !r.started) continue;
+    const e = await etaOffsets(d, s), me = e.out.get(user.cid);
+    if (!me) continue; // not on this round (no milk this session, or asked for no milk)
+    const eta = r.started + delayOf(r, r.ended || now) + me.min * 60000;
+    const from = Math.floor((eta - 5 * 60000) / 300000) * 300000; // a 15-minute window around the guess, on 5-minute marks
+    const v = { session: s, state: r.ended ? 'finished' : r.paused_at ? 'paused' : 'running', from: Math.max(from, r.started), to: Math.max(from, r.started) + WINDOW_MIN * 60000,
+      paused_min: Math.round(delayOf(r, now) / 60000), paused_since: r.paused_at || null };
+    if (r.ended && now - r.ended > 2 * 3600e3) continue; // yesterday's news
+    if (!best || (best.state === 'finished' && v.state !== 'finished') || v.from > best.from) best = v;
+  }
+  if (!best || !loc || !farm) return { state: 'none' }; // only saved locations are used — no window until the house and the start are marked
+  if (best.state !== 'finished' && now > best.to + 30 * 60000) best.state = 'late';
+  return { ...best, now };
 });
 
 // ---- Location Tracker (admin): each customer's house on the map, the farm, and the delivery order per session
@@ -382,7 +455,10 @@ route('GET', '/api/locations', async () => {
   });
   return { customers, farm: await getSetting('farm_location', null), order: { AM: await getSetting('route_order_AM', []), PM: await getSetting('route_order_PM', []) } };
 });
-route('PUT', '/api/locations/farm', async ({ body }) => { const l = validLatLng(body); await setSetting('farm_location', { ...l, marked: new Date().toISOString() }); return { ok: true }; });
+route('PUT', '/api/locations/farm', async ({ body, user }) => {
+  const l = validLatLng(body);
+  if (user.role !== 'admin') need(!(await getSetting('farm_location', null)), 'Only the admin can change the saved start location');
+  await setSetting('farm_location', { ...l, marked: new Date().toISOString() }); return { ok: true }; });
 route('DELETE', '/api/locations/farm', async () => { await run("DELETE FROM settings WHERE key='farm_location'"); return { ok: true }; });
 route('PUT', '/api/locations/order', async ({ body }) => {
   need(['AM', 'PM'].includes(body.session), 'session must be AM or PM');
@@ -391,8 +467,9 @@ route('PUT', '/api/locations/order', async ({ body }) => {
   const ids = [...new Set(body.ids.map(String))].filter((id) => known.has(id));
   await setSetting('route_order_' + body.session, ids); return { ok: true, count: ids.length };
 });
-route('PUT', '/api/locations/([^/]+)', async ({ body, m }) => {
+route('PUT', '/api/locations/([^/]+)', async ({ body, m, user }) => {
   need(await get('SELECT id FROM customers WHERE id=?', [m[1]]), 'not found');
+  if (user.role !== 'admin') need(!(await get('SELECT 1 x FROM customer_locations WHERE customer_id=?', [m[1]])), 'This house is already saved — only the admin can change it');
   const l = validLatLng(body);
   await run('INSERT OR REPLACE INTO customer_locations(customer_id,lat,lng,acc,marked) VALUES(?,?,?,?,?)', [m[1], l.lat, l.lng, l.acc, new Date().toISOString()]);
   return { ok: true };
