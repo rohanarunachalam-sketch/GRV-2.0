@@ -939,8 +939,7 @@ pages.portal = async (v) => {
         <ellipse cx="52" cy="77" rx="3" ry="4" fill="#3a2a20"/><ellipse cx="68" cy="77" rx="3" ry="4" fill="#3a2a20"/>
         <path d="M53 89 q7 -5 14 0" fill="none" stroke="#3a2a20" stroke-width="2.2" stroke-linecap="round"/>
       </g></svg>`;
-    const noMilkFun = (from, to) => {
-      const days = Math.round((new Date(to + 'T00:00') - new Date(from + 'T00:00')) / 864e5) + 1;
+    const noMilkFun = (days, from) => {
       let i = 0; try { i = (Number(localStorage.getItem('grv.noMilkFun')) || 0) % NO_MILK_FUN.length; localStorage.setItem('grv.noMilkFun', i + 1); } catch {}
       const [en, ta] = NO_MILK_FUN[i];
       const dlg = $('#dlg'); dlg.innerHTML = '';
@@ -953,14 +952,63 @@ pages.portal = async (v) => {
         h('div', { class: 'acts' }, h('button', { class: 'pri', type: 'submit' }, 'OK 👍'))));
       dlg.showModal();
     };
-    const f = h('input', { type: 'date', value: d.tomorrow, min: d.today, required: true }), t = h('input', { type: 'date', value: d.tomorrow, min: d.today, required: true });
-    f.addEventListener('change', () => { if (t.value < f.value) t.value = f.value; t.min = f.value; });
+    // calendar like My bill: tap each day you don't want milk (tap again to undo) — no From/To to understand
+    const isoAdd = (s, n) => { const x = new Date(s + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+    const lastDay = isoAdd(d.today, 89); // pick up to 3 months ahead
+    const asked = new Set(); // days already requested — shown, not tappable (cancel them in "Your requests")
+    for (const k of d.skips) for (let x = k.from < d.today ? d.today : k.from, i = 0; x <= k.to && i < 400; x = isoAdd(x, 1), i++) asked.add(x);
+    const picked = new Set();
+    let calMonth = d.today.slice(0, 7);
+    const sum = h('p', { class: 'pick-sum' });
+    const showSum = () => {
+      const l = [...picked].sort();
+      sum.className = 'pick-sum' + (l.length ? ' has' : '');
+      sum.textContent = l.length ? `✕ No milk on ${l.length} day${l.length > 1 ? 's' : ''}: ${l.map(dayLabel).join(', ')}` : 'Tap the days you don’t need milk. Tap again to undo.';
+    };
+    const cal = h('div', { class: 'cal noselect pick-cal' });
+    const drawCal = () => {
+      const first = new Date(calMonth + '-01T00:00:00Z'), lead = (first.getUTCDay() + 6) % 7;
+      const n = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+      const cells = [...Array(lead).fill(null), ...Array.from({ length: n }, (_, i) => `${calMonth}-${String(i + 1).padStart(2, '0')}`)];
+      const canPrev = calMonth > d.today.slice(0, 7), canNext = calMonth < lastDay.slice(0, 7);
+      const go = (k) => { const x = new Date(calMonth + '-01T00:00:00Z'); x.setUTCMonth(x.getUTCMonth() + k); calMonth = x.toISOString().slice(0, 7); drawCal(); };
+      const cell = (date, i) => {
+        if (!date) return h('div', {});
+        const off = date < d.today || date > lastDay, was = asked.has(date);
+        const el = h('div', { class: 'cal-d' + (off ? ' past' : was ? ' asked' : picked.has(date) ? ' pick' : '') + (date === d.today ? ' today' : ''), style: `--w:${Math.floor(i / 7) + (i % 7)}`,
+          title: was ? 'Already asked: no milk' : '', role: off || was ? null : 'button', tabindex: off || was ? null : 0, 'aria-pressed': off || was ? null : String(picked.has(date)) }, Number(date.slice(8)));
+        if (!off && !was) {
+          const tap = () => { picked.has(date) ? picked.delete(date) : picked.add(date); el.classList.toggle('pick', picked.has(date)); el.setAttribute('aria-pressed', String(picked.has(date))); cal.classList.remove('missing'); showSum(); };
+          el.addEventListener('click', tap);
+          el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tap(); } });
+        }
+        return el;
+      };
+      cal.innerHTML = '';
+      cal.append(h('div', { class: 'cal-nav' },
+          h('button', { type: 'button', class: 'cal-arrow', disabled: !canPrev, 'aria-label': 'Previous month', onclick: () => go(-1) }, '‹'),
+          h('b', {}, monthLabel(calMonth)),
+          h('button', { type: 'button', class: 'cal-arrow', disabled: !canNext, 'aria-label': 'Next month', onclick: () => go(1) }, '›')),
+        h('div', { class: 'cal-grid' }, ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((w) => h('div', { class: 'cal-w' }, w)), cells.map(cell)),
+        h('div', { class: 'cal-key' }, h('span', { class: 'pick' }, 'No milk (your pick)'), asked.size ? h('span', { class: 'asked' }, 'Already asked') : null));
+    };
+    drawCal(); showSum();
+    // picked days become one request per run of days in a row (Mon+Tue+Wed = 1 request, Fri = another)
+    const runs = () => {
+      const l = [...picked].sort(), out = [];
+      for (const x of l) { const r = out[out.length - 1]; if (r && isoAdd(r[1], 1) === x) r[1] = x; else out.push([x, x]); }
+      return out;
+    };
     // nothing is picked at first, so an evening-only customer can't skip the morning by mistake
     const ses = choices('Which delivery', [['AM', '🌅 Morning'], ['PM', '🌇 Evening'], ['BOTH', '🌅🌇 Morning & Evening']]);
     const note = h('input', { type: 'text', placeholder: 'Optional note (e.g. out of town)', maxlength: 200 });
-    v.append(h('form', { class: 'form card', onsubmit: guard(async (e) => { e.preventDefault(); if (!ses.need()) return; await api('portal/skips', 'POST', { from: f.value, to: t.value, session: ses.value, note: note.value }); noMilkFun(f.value, t.value); again(); }) },
+    v.append(h('form', { class: 'form card', onsubmit: guard(async (e) => { e.preventDefault(); if (!picked.size) { cal.classList.remove('missing'); void cal.offsetWidth; cal.classList.add('missing'); cal.scrollIntoView({ block: 'center', behavior: 'smooth' }); return toast('Tap at least one day on the calendar', true); }
+        if (!ses.need()) return;
+        const list = runs();
+        for (const [from, to] of list) { await api('portal/skips', 'POST', { from, to, session: ses.value, note: note.value }); }
+        noMilkFun(picked.size, list[0][0]); again(); }) },
       h('h2', { style: 'margin-top:0' }, "I don't need milk"), h('p', { class: 'tag' }, 'Your delivery boy and the admin are notified. You are not billed for the days you skip. You can pause from today too.'),
-      h('label', {}, 'From', f), h('label', {}, 'To (last day)', t), ses, h('label', {}, 'Note', note), h('button', { class: 'pri', type: 'submit' }, 'Send request')),
+      cal, sum, ses, h('label', {}, 'Note', note), h('button', { class: 'pri', type: 'submit' }, 'Send request')),
       h('h2', {}, 'Your requests'),
       d.skips.length ? h('div', { class: 'cards-list' }, d.skips.map((k) => h('div', { class: 'rcard' }, h('div', { class: 'rname' }, k.from === k.to ? dayLabel(k.from) : `${dayLabel(k.from)} → ${dayLabel(k.to)}`), h('div', { class: 'tag' }, { AM: 'Morning', PM: 'Evening', BOTH: 'Morning & Evening' }[k.session] + (k.note ? ' · ' + k.note : '')),
         h('div', { class: 'ract' }, h('button', { class: 'abs', onclick: guard(async () => { if (!confirm(k.from <= d.today ? 'Start getting milk again from today?' : 'Cancel this request?')) return; await api('portal/skips/' + k.id, 'DELETE'); toast('Done'); again(); }) }, k.from <= d.today ? 'Resume milk from today' : 'Cancel'))))) : h('p', { class: 'mute' }, 'No active requests.'));

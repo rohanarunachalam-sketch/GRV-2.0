@@ -387,6 +387,21 @@ body.customer .bar .seg{width:100%}
 .cal-key span{display:inline-flex;align-items:center;gap:7px}
 .cal-key span::before{content:"";width:14px;height:14px;border-radius:5px}
 .cal-key .ok::before{background:#4fb36f}.cal-key .pause::before{background:#f2c230}.cal-key .out::before{background:#e5584a}
+/* customer No milk: tap-to-pick calendar */
+.pick-cal{margin:4px 0 8px;border:2px solid var(--line)}
+.pick-cal.missing{border-color:var(--bad);background:var(--bad-l);animation:shake .4s}
+.cal-nav{display:flex;align-items:center;justify-content:space-between;margin:0 0 10px;font-size:16px}
+.form .cal-arrow{width:40px;height:40px;min-height:0;padding:0;margin:0;border-radius:50%;border:1.5px solid var(--line);background:#fff;color:var(--ink);font-size:22px;line-height:1;cursor:pointer}
+.form .cal-arrow:disabled{opacity:.3;cursor:default}
+.pick-cal .cal-d[role=button]{background:#fff;color:var(--ink);border:1.5px solid var(--line);cursor:pointer;-webkit-tap-highlight-color:transparent;transition:transform .12s}
+.pick-cal .cal-d[role=button]:active{transform:scale(.9)}
+.pick-cal .cal-d.pick{background:#e5584a;border-color:#e5584a;color:#fff;font-weight:800;position:relative}
+.pick-cal .cal-d.pick::after{content:"✕";position:absolute;top:1px;right:4px;font-size:10px}
+.pick-cal .cal-d.asked{background:#fbd5d0;color:#a3261b;border:1.5px dashed #e5584a}
+.pick-cal .cal-d.past{opacity:.4}
+.cal-key .pick::before{background:#e5584a}.cal-key .asked::before{background:#fbd5d0;border:1.5px dashed #e5584a}
+.pick-sum{margin:0 0 14px;font-size:14px;color:var(--mute);font-weight:600}
+.pick-sum.has{color:#a3261b}
 .ygrid tfoot td{position:static}.ygrid tfoot td.stick{position:sticky}
 .pill.Booked{background:var(--warn-l);color:var(--warn)}.pill.Cancelled{background:var(--bad-l);color:var(--bad)}
 /* dashboard: today's yield vs sold */
