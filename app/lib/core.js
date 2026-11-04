@@ -382,6 +382,32 @@ async function routeList(date, session) {
   return items;
 }
 
+// Admin: customers whose milk on one day is different from their usual quantity, and why
+route('GET', '/api/day-changes', async ({ q }) => {
+  validDate(q.date);
+  const sessions = q.session === 'AM' || q.session === 'PM' ? [q.session] : ['AM', 'PM'];
+  const [customers, plans, dels, unv, skips, reqs] = await Promise.all([all('SELECT * FROM customers ORDER BY id'), plansOf(),
+    all('SELECT customer_id c, session s, qty q FROM deliveries WHERE date=?', [q.date]), all('SELECT customer_id c, session s FROM milk_unavailable WHERE date=?', [q.date]),
+    all("SELECT * FROM skips WHERE status='active' AND from_date<=? AND to_date>=?", [q.date, q.date]), all("SELECT customer_id c, session s, qty q, note FROM qty_requests WHERE date=? AND status='Accepted'", [q.date])]);
+  const key = (c, s) => `${c}|${s}`;
+  const ov = new Map(dels.map((r) => [key(r.c, r.s), r.q])), un = new Set(unv.map((r) => key(r.c, r.s))), rq = new Map(reqs.map((r) => [key(r.c, r.s), r]));
+  const sk = new Map();
+  for (const k of skips) for (const s of sessionsOf(k.session)) sk.set(key(k.customer_id, s), k);
+  const items = [];
+  for (const c of customers) for (const s of sessions) {
+    const k = key(c.id, s), usual = defQty(planOn(c, plans.get(c.id), q.date), s);
+    let qty = usual, why = '', note = '';
+    if (ov.has(k)) {
+      qty = ov.get(k);
+      if (un.has(k) && qty === 0) why = 'Milk unavailable';
+      else if (rq.has(k) && rq.get(k).q === qty) { why = 'Customer asked (accepted)'; note = rq.get(k).note || ''; }
+      else why = 'Changed by admin / delivery';
+    } else if (sk.has(k)) { qty = 0; why = 'No milk (customer pause)'; note = sk.get(k).note || ''; }
+    if (qty !== usual) items.push({ id: c.id, name: c.name, session: s, usual, qty, diff: r2(qty - usual), why, note });
+  }
+  return { date: q.date, items };
+});
+
 // ---- delivery times for customers: worked out only from the SAVED locations + the start time (no live tracking)
 const ROAD_FACTOR = 1.4, KMH = 18, STOP_MIN = 1.5, WINDOW_MIN = 15; // roads are ~40% longer than a straight line; ~18 km/h on a bike; ~1.5 min per house
 const kmBetween = (a, b) => {
@@ -462,7 +488,8 @@ route('GET', '/api/locations', async () => {
     const p = planOn(c, plans.get(c.id), t), l = locs.get(c.id);
     return { id: c.id, name: c.name, am: defQty(p, 'AM'), pm: defQty(p, 'PM'), status: p.status, lat: l ? l.lat : null, lng: l ? l.lng : null, acc: l ? l.acc : null, marked: l ? l.marked : null };
   });
-  return { customers, farm: await getSetting('farm_location', null), order: { AM: await getSetting('route_order_AM', []), PM: await getSetting('route_order_PM', []) } };
+  return { customers, farm: await getSetting('farm_location', null), order: { AM: await getSetting('route_order_AM', []), PM: await getSetting('route_order_PM', []) },
+    prev: { AM: await getSetting('route_order_prev_AM', null), PM: await getSetting('route_order_prev_PM', null) } };
 });
 route('PUT', '/api/locations/farm', async ({ body, user }) => {
   const l = validLatLng(body);
@@ -473,8 +500,22 @@ route('PUT', '/api/locations/order', async ({ body, user }) => {
   need(['AM', 'PM'].includes(body.session), 'session must be AM or PM'); checkShift(user, body.session);
   need(Array.isArray(body.ids) && body.ids.length <= 2000, 'ids must be a list');
   const known = new Set((await all('SELECT id FROM customers')).map((r) => r.id));
-  const ids = [...new Set(body.ids.map(String))].filter((id) => known.has(id));
+  const clean = (list) => [...new Set(list.map(String))].filter((id) => known.has(id));
+  const ids = clean(body.ids);
+  // ⚡ Auto order keeps the order from just before it, so "Go back to old order" can put it back (until the next auto order)
+  if (body.auto) {
+    need(Array.isArray(body.prev) && body.prev.length <= 2000, 'prev must be a list');
+    await setSetting('route_order_prev_' + body.session, { ids: clean(body.prev), at: new Date().toISOString(), by: user.role === 'admin' ? 'Admin' : 'Delivery' });
+  }
   await setSetting('route_order_' + body.session, ids); return { ok: true, count: ids.length };
+});
+route('PUT', '/api/locations/undo-auto-order', async ({ body, user }) => {
+  need(['AM', 'PM'].includes(body.session), 'session must be AM or PM'); checkShift(user, body.session);
+  const prev = await getSetting('route_order_prev_' + body.session, null);
+  need(prev, 'There is no old order to go back to');
+  await setSetting('route_order_' + body.session, prev.ids);
+  await run('DELETE FROM settings WHERE key=?', ['route_order_prev_' + body.session]);
+  return { ok: true };
 });
 route('PUT', '/api/locations/([^/]+)', async ({ body, m, user }) => {
   need(await get('SELECT id FROM customers WHERE id=?', [m[1]]), 'not found');

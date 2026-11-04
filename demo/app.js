@@ -527,7 +527,34 @@ pages.customers = crud({ title: 'Customer', sub: 'Master list — AM/PM defaults
     } }],
   total: (rs, n) => sumRow(n, 6, lit(rs.reduce((a, r) => a + r.am + r.pm, 0))),
   rowExtra: (r) => h('span', {}, h('button', { class: 'link', onclick: () => customerHistory(r) }, 'History'), h('button', { class: 'link', onclick: () => customerLogin(r) }, 'Login')),
+  extraBar: () => h('button', { onclick: () => dayChanges() }, '📅 Day changes'),
 });
+
+// Who gets a different quantity from their usual on one day (admin / delivery edits, accepted requests, no-milk pauses, milk unavailable)
+async function dayChanges() {
+  const dlg = $('#dlg');
+  let date = today(), session = 'BOTH';
+  const out = h('div');
+  const sign = (n) => (n > 0 ? '+' : '−') + lit(Math.abs(n)) + ' L';
+  const draw = guard(async () => {
+    const d = await api(`day-changes?date=${date}&session=${session}`);
+    const more = d.items.filter((i) => i.diff > 0).reduce((a, i) => a + i.diff, 0), less = d.items.filter((i) => i.diff < 0).reduce((a, i) => a + i.diff, 0);
+    out.innerHTML = '';
+    out.append(d.items.length ? h('div', {},
+      h('p', { class: 'tag' }, `${d.items.length} change${d.items.length > 1 ? 's' : ''} on ${dayLabel(date)}` + (more ? ` · ${sign(more)} extra` : '') + (less ? ` · ${sign(less)} less` : '')),
+      table([{ label: 'Customer', render: (r) => nameCell(r.name, r.id) }, { label: 'Session', render: (r) => (r.session === 'AM' ? 'Morning' : 'Evening') },
+        { label: 'Usual', num: 1, render: (r) => lit(r.usual) + ' L' }, { label: 'That day', num: 1, render: (r) => h('b', {}, lit(r.qty) + ' L') },
+        { label: 'Change', num: 1, render: (r) => h('span', { style: `color:${r.diff > 0 ? '#15803d' : '#b91c1c'};font-weight:600` }, sign(r.diff)) },
+        { label: 'Why', render: (r) => h('span', {}, r.why, r.note ? h('div', { class: 'tag' }, r.note) : null) }], d.items))
+      : h('p', { class: 'mute' }, `No changes on ${dayLabel(date)} — everyone gets their usual milk.`));
+  });
+  dlg.innerHTML = '';
+  dlg.append(h('div', { class: 'form' }, h('h1', {}, 'Day changes'), h('p', { class: 'sub' }, 'Customers whose milk on this day is different from their usual quantity.'),
+    h('div', { class: 'bar' }, h('input', { type: 'date', value: date, onchange: (e) => { if (e.target.value) { date = e.target.value; draw(); } } }),
+      h('select', { 'aria-label': 'Session', onchange: (e) => { session = e.target.value; draw(); } }, [['BOTH', 'Both'], ['AM', 'Morning'], ['PM', 'Evening']].map(([v, t]) => h('option', { value: v }, t)))),
+    out, h('div', { class: 'acts' }, h('button', { type: 'button', onclick: () => dlg.close() }, 'Close'))));
+  await draw(); dlg.showModal();
+}
 
 // A customer's quantity / price changes, oldest first, with Delete to undo a wrong one.
 async function customerHistory(c) {
@@ -933,6 +960,7 @@ pages.locations = async (v) => {
   let order = d.order[L.session].filter((id) => byId.has(id) && inSession(byId.get(id)));
   for (const c of d.customers) if (inSession(c) && !order.includes(c.id)) order.push(c.id);
   let saveT = null;
+  const prev = (d.prev || {})[L.session]; // order from before the last ⚡ Auto order, if it can still be put back
   const save = () => { clearTimeout(saveT); saveT = setTimeout(guard(async () => { await api('locations/order', 'PUT', { session: L.session, ids: order }); toast('Order saved'); }), 700); };
 
   const mark = (what, label) => guard(async () => {
@@ -1027,9 +1055,17 @@ pages.locations = async (v) => {
         const marked = order.filter((id) => has(byId.get(id)));
         if (marked.length < 2) return toast('Mark at least 2 customer locations first', true);
         if (!confirm(`Put the ${marked.length} marked customers in the shortest order${farm ? ' from the farm' : ''}? Unmarked customers stay at the end. You can still move anyone after.`)) return;
+        const before = [...order];
+        clearTimeout(saveT); // this save carries the order from before, so it can be put back
         order = [...autoOrder(marked.map((id) => byId.get(id)), farm).map((c) => c.id), ...order.filter((id) => !has(byId.get(id)))];
-        draw(); save();
-      } }, '⚡ Auto order (shortest path)')),
+        guard(async () => { await api('locations/order', 'PUT', { session: L.session, ids: order, auto: true, prev: before }); toast('Auto order saved — tap “Go back to old order” to undo'); render(); })();
+      } }, '⚡ Auto order (shortest path)'),
+      prev ? h('button', { onclick: guard(async () => {
+        if (!confirm('Go back to the order from before auto order? Any changes made after auto order will be lost.')) return;
+        clearTimeout(saveT);
+        await api('locations/undo-auto-order', 'PUT', { session: L.session }); toast('Old order is back'); render();
+      }) }, '↩ Go back to old order') : null),
+    prev ? h('p', { class: 'tag' }, `Auto order was used ${new Date(prev.at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })} by ${prev.by}. You can go back to the order from before it.`) : null,
     h('div', { class: 'bar' }, search), info, listBox);
   draw();
   // first visit: ask for the start location before anything else
