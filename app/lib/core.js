@@ -252,7 +252,7 @@ async function nextId(table, prefix, pad) {
 const routes = [];
 const route = (method, pattern, fn) => routes.push({ method, re: new RegExp('^' + pattern + '$'), fn });
 // delivery staff may also mark houses, set the delivery order (Location Tracker) and start / pause / finish a delivery; the routes themselves stop them changing saved locations
-const deliveryExtra = (key) => key === 'GET /api/locations' || /^PUT \/api\/locations\/[^/]+$/.test(key) || key === 'GET /api/run' || /^POST \/api\/run\/(start|pause|resume|end)$/.test(key);
+const deliveryExtra = (key) => key === 'GET /api/locations' || /^PUT \/api\/locations\/[^/]+$/.test(key) || key === 'GET /api/run' || /^(GET|PUT|DELETE) \/api\/live$/.test(key) || /^POST \/api\/run\/(start|pause|resume|end)$/.test(key);
 const DELIVERY_ALLOWED = new Set(['GET /api/me', 'POST /api/logout', 'GET /api/route', 'PUT /api/delivery', 'PUT /api/delivery/unavailable', 'GET /api/notices']);
 const roleAllows = (role, key) => role === 'admin' || (role === 'delivery' && (DELIVERY_ALLOWED.has(key) || deliveryExtra(key))) ||
   (role === 'customer' && (['GET /api/me', 'POST /api/logout'].includes(key) || key.split(' ')[1].startsWith('/api/portal')));
@@ -471,7 +471,7 @@ route('GET', '/api/portal/eta', async ({ user }) => {
     if (!best || (best.state === 'finished' && v.state !== 'finished') || v.from > best.from) best = v;
   }
   if (!best || !loc || !farm) return { state: 'none' }; // only saved locations are used — no window until the house and the start are marked
-  if (best.state !== 'finished' && now > best.to + 30 * 60000) best.state = 'late';
+  // no 'late' message: the customer keeps seeing the same window until the round is finished (pauses still move it later)
   return { ...best, now };
 });
 
@@ -523,6 +523,30 @@ route('PUT', '/api/locations/([^/]+)', async ({ body, m, user }) => {
   const l = validLatLng(body);
   await run('INSERT OR REPLACE INTO customer_locations(customer_id,lat,lng,acc,marked) VALUES(?,?,?,?,?)', [m[1], l.lat, l.lng, l.acc, new Date().toISOString()]);
   return { ok: true };
+});
+// ---- live map (admin + delivery only, never customers): the phone of whoever is out delivering sends its GPS while a round is running
+const LIVE_FRESH_MS = 5 * 60000; // a position older than this is treated as gone (phone locked, no signal)
+const liveKey = (user) => 'live_' + user.role + (user.role === 'delivery' && user.shift && user.shift !== 'BOTH' ? '_' + user.shift : '');
+const liveName = (key) => ({ live_admin: 'Admin', live_delivery: 'Delivery', live_delivery_AM: 'Morning delivery', live_delivery_PM: 'Evening delivery' }[key] || 'Delivery');
+const runningNow = async (user) => { // today's rounds this login may run that are started, not paused, not finished
+  const out = [];
+  for (const s of ['AM', 'PM']) { if (user.role === 'delivery' && user.shift && user.shift !== 'BOTH' && user.shift !== s) continue; const r = await runOf(today(), s); if (r && r.started && !r.ended && !r.paused_at) out.push(s); }
+  return out;
+};
+route('PUT', '/api/live', async ({ body, user }) => {
+  const running = await runningNow(user);
+  if (!running.length) return { ok: false, running }; // nothing to share: not started, paused or finished
+  const l = validLatLng(body), hd = Number(body.heading);
+  await setSetting(liveKey(user), { ...l, heading: Number.isFinite(hd) ? Math.round(hd) : null, at: Date.now(), sessions: running });
+  return { ok: true, running };
+});
+route('DELETE', '/api/live', async ({ user }) => { await run('DELETE FROM settings WHERE key=?', [liveKey(user)]); return { ok: true }; });
+route('GET', '/api/live', async ({ user }) => {
+  const now = Date.now(), runs = {};
+  for (const s of ['AM', 'PM']) { const r = await runOf(today(), s); runs[s] = !r || !r.started ? 'none' : r.ended ? 'finished' : r.paused_at ? 'paused' : 'running'; }
+  const people = (await all("SELECT key, value FROM settings WHERE key LIKE 'live\\_%' ESCAPE '\\'")).map((r) => ({ key: r.key, who: liveName(r.key), ...JSON.parse(r.value) }))
+    .filter((p) => now - p.at < LIVE_FRESH_MS && (p.sessions || []).some((s) => runs[s] === 'running'));
+  return { now, runs, people, me: liveKey(user) };
 });
 route('DELETE', '/api/locations/([^/]+)', async ({ m }) => { await run('DELETE FROM customer_locations WHERE customer_id=?', [m[1]]); return { ok: true }; });
 route('GET', '/api/me', async ({ user }) => {

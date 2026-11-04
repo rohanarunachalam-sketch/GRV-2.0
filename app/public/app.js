@@ -303,7 +303,7 @@ function runControl(session) {
   const onWake = () => { if (document.visibilityState === 'visible') refresh(false); };
   const act = (what, ask) => guard(async () => {
     if (ask && !confirm(ask)) return;
-    try { paint(await api('run/' + what, 'POST', { session })); } catch (e) { refresh(false); throw e; } // someone on the other login may have pressed first
+    try { paint(await api('run/' + what, 'POST', { session })); liveKick(); } catch (e) { refresh(false); throw e; } // someone on the other login may have pressed first
     toast({ start: 'Delivery started — customers can now see their time', pause: 'Paused — customers’ times will move later', resume: 'Resumed — times updated', end: 'Delivery finished' }[what]); });
   let last = '';
   const paint = (d) => {
@@ -1039,8 +1039,9 @@ pages.locations = async (v) => {
 
   const sessSeg = only ? h('b', { class: 'shift-pill' }, only === 'AM' ? '🌅 Morning' : '🌇 Evening') : h('div', { class: 'seg' }, [['AM', '🌅 Morning'], ['PM', '🌇 Evening']].map(([k, l]) => h('button', { class: L.session === k ? 'on' : '', onclick: () => { L.session = k; render(); } }, l)));
   const search = h('input', { type: 'search', placeholder: 'Find customer (name or ID)', value: L.filter, oninput: (e) => { L.filter = e.target.value; draw(); } });
-  v.append(h('h1', {}, admin ? 'Location Tracker' : 'Locations'),
-    h('p', { class: 'sub' }, 'One-time setup. Step 1: mark the place where delivery starts. Step 2: go to each customer’s house and mark it. The saved locations are kept and used for the delivery order and for the time customers see — no live tracking.'),
+  v.append(h('div', { class: 'loc-head' }, h('h1', {}, admin ? 'Location Tracker' : 'Locations'),
+      h('button', { class: 'pri map-btn', onclick: guard(() => openMap({ d, order, session: L.session })) }, h('span', { 'aria-hidden': 'true' }, '🗺️'), ' Map')),
+    h('p', { class: 'sub' }, 'One-time setup. Step 1: mark the place where delivery starts. Step 2: go to each customer’s house and mark it. The saved locations are used for the delivery order and for the time customers see. Tap 🗺️ Map to see every house and the live cart during a delivery — customers never see the live location.'),
     h('div', { id: 'gps-banner' }),
     allDone ? h('div', { class: 'loc-done' }, '✅ Setup complete — all locations are saved. ', admin ? h('button', { class: 'link', onclick: () => { L.edit = !L.edit; render(); } }, L.edit ? '🔒 Done changing' : '✏️ Change saved locations') : null)
       : farm && admin ? h('div', { class: 'bar' }, h('button', { class: 'link', onclick: () => { L.edit = !L.edit; render(); } }, L.edit ? '🔒 Done changing' : '✏️ Change saved locations')) : null,
@@ -1089,6 +1090,153 @@ pages.locations = async (v) => {
   };
   check();
 };
+
+// ---------- Live map (admin + delivery only — customers never see anyone's live position) ----------
+// Sharing: while a round is running (started, not paused, not finished), this phone sends its GPS every ~10 s.
+// Delivery logins share by default; the admin turns it on from the map only when they go out delivering.
+const LIVE = { watch: null, lastSent: 0, lastFix: null, recheck: null, wake: null, busy: false };
+const shareOn = () => { let v = null; try { v = localStorage.getItem('grv.shareLive'); } catch {} return v == null ? S.user && S.user.role === 'delivery' : v === '1'; };
+const setShare = (on) => { try { localStorage.setItem('grv.shareLive', on ? '1' : '0'); } catch {} if (on) liveKick(); else { liveStopGps(); clearTimeout(LIVE.recheck); api('live', 'DELETE').catch(() => {}); } };
+const bearing = (a, b) => { const r = Math.PI / 180, y = Math.sin((b.lng - a.lng) * r) * Math.cos(b.lat * r), x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos((b.lng - a.lng) * r); return (Math.atan2(y, x) / r + 360) % 360; };
+function liveStopGps() {
+  if (LIVE.watch != null) navigator.geolocation.clearWatch(LIVE.watch); LIVE.watch = null;
+  if (LIVE.wake) { LIVE.wake.release().catch(() => {}); LIVE.wake = null; }
+}
+const keepAwake = () => { if (LIVE.watch != null && !LIVE.wake && navigator.wakeLock && document.visibilityState === 'visible') navigator.wakeLock.request('screen').then((w) => { LIVE.wake = w; w.addEventListener('release', () => { if (LIVE.wake === w) LIVE.wake = null; }); }, () => {}); };
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { keepAwake(); liveKick(); } });
+function liveStartGps() {
+  if (LIVE.watch != null) return;
+  LIVE.watch = navigator.geolocation.watchPosition((p) => {
+    const fix = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy, heading: p.coords.heading };
+    const now = Date.now(), prev = LIVE.lastFix;
+    const moved = prev ? kmBetween(prev, fix) * 1000 : Infinity;
+    if (now - LIVE.lastSent < 4000 || (now - LIVE.lastSent < 10000 && moved < 25) || LIVE.busy) return; // ~every 10 s, sooner when moving fast
+    if (fix.heading == null || Number.isNaN(fix.heading)) fix.heading = prev && moved > 8 ? bearing(prev, fix) : prev ? prev.heading : null;
+    LIVE.busy = true; LIVE.lastSent = now;
+    api('live', 'PUT', fix).then((r) => { LIVE.lastFix = fix; if (!r.ok) { liveStopGps(); liveLater(); } }, () => {}).finally(() => { LIVE.busy = false; });
+  }, () => {}, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+  keepAwake();
+}
+const liveLater = () => { clearTimeout(LIVE.recheck); LIVE.recheck = setTimeout(liveKick, 30000); };
+// is one of my rounds running? then start the GPS; otherwise look again in 30 s
+function liveKick() {
+  clearTimeout(LIVE.recheck);
+  if (!S.user || !['admin', 'delivery'].includes(S.user.role) || !shareOn() || !window.isSecureContext || !navigator.geolocation) return liveStopGps();
+  api('live').then((d) => {
+    const mine = Object.entries(d.runs).some(([s, st]) => st === 'running' && (S.user.role === 'admin' || !S.user.shift || S.user.shift === 'BOTH' || S.user.shift === s));
+    if (mine) liveStartGps(); else liveStopGps();
+    liveLater();
+  }, liveLater);
+}
+
+let leafletP = null;
+const loadLeaflet = () => leafletP || (leafletP = new Promise((ok, fail) => {
+  const base = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/';
+  document.head.append(h('link', { rel: 'stylesheet', href: base + 'leaflet.min.css' }));
+  const s = h('script', { src: base + 'leaflet.min.js' });
+  s.onload = () => ok(window.L); s.onerror = () => { leafletP = null; s.remove(); fail(new Error('Map could not load — check the internet connection')); };
+  document.head.append(s);
+}));
+// the maattu vandi (bullock cart) map marker, facing right; flipped to face left when going west
+const CART_SVG = `<svg viewBox="0 0 66 42" width="66" height="42" aria-hidden="true">
+  <rect x="3" y="15" width="27" height="9" rx="2" fill="#b0652f" stroke="#5b2e12" stroke-width="1.3"/>
+  <rect x="6" y="6" width="7.5" height="10" rx="2.2" fill="#e3e7ea" stroke="#6b7680"/><rect x="15.5" y="6" width="7.5" height="10" rx="2.2" fill="#e3e7ea" stroke="#6b7680"/>
+  <rect x="7.8" y="4" width="4" height="2.4" rx="1" fill="#9aa4ad"/><rect x="17.3" y="4" width="4" height="2.4" rx="1" fill="#9aa4ad"/>
+  <line x1="29" y1="20" x2="45" y2="17.5" stroke="#5b2e12" stroke-width="2.2" stroke-linecap="round"/>
+  <g class="cm-wheel"><circle cx="16" cy="30" r="9.5" fill="#fff8" stroke="#5b2e12" stroke-width="2.6"/><path d="M16 20.5v19M6.5 30h19M9.3 23.3l13.4 13.4M22.7 23.3 9.3 36.7" stroke="#5b2e12" stroke-width="1.3"/><circle cx="16" cy="30" r="2.2" fill="#5b2e12"/></g>
+  <g class="cm-ox"><path d="M42 26v11M45.5 26.5v10.5M53.5 26.5v10.5M57 26v11" stroke="#6b5a45" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M40 21q-3 4-2 9" stroke="#6b5a45" stroke-width="1.4" fill="none"/>
+  <ellipse cx="49.5" cy="21" rx="10" ry="6.6" fill="#f4f0e6" stroke="#6b5a45" stroke-width="1.3"/><path d="M43 15.5q3.5-5.5 7.5-1" fill="#f4f0e6" stroke="#6b5a45" stroke-width="1.3"/>
+  <ellipse cx="61" cy="17.5" rx="4.2" ry="3.6" fill="#f4f0e6" stroke="#6b5a45" stroke-width="1.3"/><circle cx="62" cy="16.7" r=".9" fill="#222"/>
+  <path d="M59 14.6q-1.8-4.8 1.4-7.4M62.4 14.4q2.3-4.6-.2-7.6" stroke="#c0392b" stroke-width="1.8" fill="none" stroke-linecap="round"/></g></svg>`;
+const agoText = (ms) => (ms < 60000 ? Math.max(1, Math.round(ms / 1000)) + ' s ago' : Math.round(ms / 60000) + ' min ago');
+
+// full-screen map: every marked house with its name, the farm, the delivery order line, and the live cart(s)
+async function openMap({ d, order, session }) {
+  let Lf; try { Lf = await loadLeaflet(); } catch (e) { return toast(e.message, true); }
+  const byId = new Map(d.customers.map((c) => [c.id, c]));
+  const has = (c) => c && c.lat != null;
+  const pos = new Map(order.map((id, i) => [id, i + 1]));
+  const status = h('div', { class: 'map-status' }, 'Looking for the delivery…');
+  const shareBtn = h('button', { class: 'map-share' });
+  const paintShare = () => {
+    const on = shareOn(), ok = window.isSecureContext && !!navigator.geolocation;
+    shareBtn.className = 'map-share' + (on && ok ? ' on' : '');
+    shareBtn.textContent = !ok ? '📵 Live sharing needs the https link' : on ? '📡 Sharing my location: ON' : '📡 I’m delivering — share my location';
+    shareBtn.disabled = !ok;
+  };
+  shareBtn.onclick = () => { const on = !shareOn(); if (!on && !confirm('Stop sharing your live location?')) return; setShare(on); paintShare(); toast(on ? 'Your live location shows while a round is running (keep the app open)' : 'Stopped sharing'); };
+  paintShare();
+  const box = h('div', { class: 'map-box' });
+  const close = () => { clearInterval(poll); removeEventListener('hashchange', close); map.remove(); ov.remove(); document.body.classList.remove('map-open'); };
+  let follow = null;
+  const ov = h('div', { class: 'map-ov', role: 'dialog', 'aria-label': 'Delivery map' },
+    h('div', { class: 'map-top' }, h('b', {}, '🗺️ Delivery map'), h('span', { class: 'shift-pill' }, session === 'AM' ? '🌅 Morning' : '🌇 Evening'), h('span', { class: 'grow' }),
+      h('button', { class: 'map-x', 'aria-label': 'Close map', onclick: () => close() }, '✕')),
+    box, status,
+    h('div', { class: 'map-acts' },
+      h('button', { onclick: () => fitAll() }, '⤢ Show all'),
+      h('button', { onclick: () => { const k = [...carts.keys()][0]; if (!k) return toast('No one is delivering right now', true); follow = k; map.setView(carts.get(k).m.getLatLng(), Math.max(map.getZoom(), 17)); toast('Following the cart — move the map to stop'); } }, '🐂 Follow cart'),
+      h('button', { onclick: () => navigator.geolocation ? navigator.geolocation.getCurrentPosition((p) => { const ll = [p.coords.latitude, p.coords.longitude]; meDot.setLatLng(ll).addTo(map); map.setView(ll, Math.max(map.getZoom(), 17)); }, (e) => gpsHelp(e.code === 1 ? 'denied' : e.code === 2 ? 'off' : 'slow'), { enableHighAccuracy: true, timeout: 15000 }) : gpsHelp('none') }, '📍 Me')),
+    shareBtn);
+  document.body.append(ov); document.body.classList.add('map-open');
+  addEventListener('hashchange', close);
+
+  const map = Lf.map(box, { zoomControl: true, attributionControl: true });
+  Lf.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map); // free street map, no key needed
+  map.on('dragstart', () => { follow = null; });
+  map.createPane('carts').style.zIndex = 700; // the cart sits above the house name labels
+  const labelsBy = () => box.classList.toggle('far', map.getZoom() < 15); // names only when zoomed in enough to read them
+  map.on('zoomend', labelsBy);
+  const meDot = Lf.circleMarker([0, 0], { radius: 8, color: '#fff', weight: 3, fillColor: '#2563eb', fillOpacity: 1 });
+  const pts = [];
+  if (d.farm) { const m = Lf.marker([d.farm.lat, d.farm.lng], { icon: Lf.divIcon({ className: '', html: '<div class="hm farm">🏠</div>', iconSize: [34, 34], iconAnchor: [17, 17] }), zIndexOffset: 500 }).addTo(map); m.bindTooltip('Farm (start)', { permanent: true, direction: 'top', offset: [0, -16], className: 'hm-lbl farm' }); pts.push([d.farm.lat, d.farm.lng]); }
+  const line = d.farm ? [[d.farm.lat, d.farm.lng]] : [];
+  for (const c of d.customers) {
+    if (!has(c)) continue;
+    const n = pos.get(c.id), qty = session === 'AM' ? c.am : c.pm;
+    const m = Lf.marker([c.lat, c.lng], { icon: Lf.divIcon({ className: '', html: `<div class="hm${n ? '' : ' off'}">${n || ''}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: n ? 100 : 0 }).addTo(map);
+    m.bindTooltip(c.name, { permanent: true, direction: 'top', offset: [0, -12], className: 'hm-lbl' + (n ? '' : ' off') });
+    const pop = h('div', { class: 'hm-pop' }, h('b', {}, c.name), h('div', { class: 'tag' }, `${c.id}` + (n ? ` · stop ${n} · ${lit(qty)} L` : ' · no milk this session')),
+      h('a', { class: 'btn', href: `https://www.google.com/maps/dir/?api=1&destination=${c.lat},${c.lng}`, target: '_blank', rel: 'noopener' }, '🧭 Directions'));
+    m.bindPopup(pop);
+    pts.push([c.lat, c.lng]);
+  }
+  for (const id of order) { const c = byId.get(id); if (has(c)) line.push([c.lat, c.lng]); }
+  if (line.length > 1) Lf.polyline(line, { color: '#1c7a44', weight: 3, opacity: .55, dashArray: '6 8' }).addTo(map);
+  const fitAll = () => { const all = [...pts, ...[...carts.values()].map((x) => x.m.getLatLng())]; if (all.length > 1) map.fitBounds(all, { padding: [40, 40], maxZoom: 17 }); else if (all.length) map.setView(all[0], 16); else map.setView([11.0, 78.5], 7); };
+  // live carts: glide smoothly to each new position (like food-delivery apps) instead of jumping
+  const carts = new Map();
+  const glide = (x, to) => {
+    const from = x.m.getLatLng(), t0 = performance.now(), dur = 1500;
+    cancelAnimationFrame(x.raf);
+    const step = (t) => { const k = Math.min(1, (t - t0) / dur), e = k * (2 - k); x.m.setLatLng([from.lat + (to[0] - from.lat) * e, from.lng + (to[1] - from.lng) * e]); if (follow === x.key) map.panTo(x.m.getLatLng(), { animate: false }); if (k < 1) x.raf = requestAnimationFrame(step); };
+    x.raf = requestAnimationFrame(step);
+  };
+  const cartHtml = (p, d0) => `<div class="cm${p.heading != null && p.heading > 180 ? ' west' : ''}"><div class="cm-pulse"></div><div class="cm-body">${CART_SVG}</div><div class="cm-lbl">${p.key === d0.me ? 'You' : p.who} · ${agoText(d0.now - p.at)}</div></div>`;
+  let firstFit = true;
+  const refresh = () => api('live').then((r) => {
+    const seen = new Set();
+    for (const p of r.people) {
+      seen.add(p.key);
+      let x = carts.get(p.key);
+      const icon = Lf.divIcon({ className: '', html: cartHtml(p, r), iconSize: [80, 56], iconAnchor: [40, 65] });
+      if (!x) { x = { key: p.key, m: Lf.marker([p.lat, p.lng], { icon, pane: 'carts' }).addTo(map), raf: 0 }; carts.set(p.key, x); }
+      else { x.m.setIcon(icon); const ll = x.m.getLatLng(); if (ll.lat !== p.lat || ll.lng !== p.lng) glide(x, [p.lat, p.lng]); }
+    }
+    for (const [k, x] of carts) if (!seen.has(k)) { cancelAnimationFrame(x.raf); x.m.remove(); carts.delete(k); }
+    const st = r.runs[session], name = session === 'AM' ? 'Morning' : 'Evening';
+    status.className = 'map-status' + (r.people.length ? ' on' : '');
+    status.textContent = r.people.length ? `🟢 ${r.people.map((p) => (p.key === r.me ? 'You' : p.who) + ' — seen ' + agoText(r.now - p.at)).join(' · ')}`
+      : st === 'running' ? `🟢 ${name} delivery is running — waiting for the delivery phone’s GPS (its app must be open with sharing on)`
+        : st === 'paused' ? `⏸ ${name} delivery is paused — the cart shows again when it resumes`
+          : st === 'finished' ? `✓ ${name} delivery finished` : `${name} delivery not started — the cart shows here once it starts`;
+    if (firstFit && r.people.length) { firstFit = false; fitAll(); }
+  }, () => { status.textContent = '⚠ Could not get the live position — check the internet'; });
+  fitAll(); labelsBy(); refresh();
+  const poll = setInterval(refresh, 5000);
+  setTimeout(() => map.invalidateSize(), 50);
+}
 
 // ---------- customer portal ----------
 // "Your milk will arrive between 6:00 and 6:15 PM" — shown once today's delivery is started; checks again every 30 s
@@ -1163,8 +1311,6 @@ function etaCard() {
       const when = sessionName(e.session), win = `${clock(e.from)} – ${clock(e.to)}`;
       box.hidden = false; box.className = 'eta-card ' + e.state;
       if (e.state === 'finished') box.append(h('div', { class: 'eta-l' }, tr(`✓ Today’s ${when.toLowerCase()} delivery is finished`, `✓ இன்னைக்கு ${when} டெலிவரி முடிஞ்சது`, `✓ आज की ${when} की डिलीवरी हो गई`)), h('div', { class: 'tag' }, tr('Thank you! 🥛', 'நன்றி! 🥛', 'शुक्रिया! 🥛')));
-      else if (e.state === 'late') box.append(cartScene(), h('div', { class: 'eta-l' }, tr('Your milk is on the way', 'உங்க பால் வந்துட்டே இருக்கு', 'आपका दूध रास्ते में है')),
-        h('div', { class: 'tag' }, tr('It is taking a little longer today. Sorry for the wait 🙏', 'இன்னைக்கு கொஞ்சம் லேட் ஆகுது. காத்திருக்க வச்சதுக்கு சாரி 🙏', 'आज थोड़ी देर हो रही है। इंतज़ार के लिए माफ़ कीजिए 🙏')));
       else box.append(cartScene(), h('div', { class: 'eta-l' }, tr(`Your ${when.toLowerCase()} milk will arrive between`, `உங்க ${when} பால் இந்த நேரத்துக்குள்ள வந்துடும்`, `आपका ${when} का दूध इस समय के बीच आएगा`)), h('div', { class: 'eta-t' }, win),
         langOn() === 'en' ? h('div', { class: 'tag', lang: 'ta' }, `உங்க பால் ${win} க்குள் வரும்`) : null, h('div', { class: 'tag' }, tr('Approximate time', 'சுமார் இந்த நேரம்', 'लगभग इसी समय')));
     }, () => {});
@@ -1465,6 +1611,7 @@ async function render() {
     try { S.user = await api('me'); } catch { return showLogin(); }
   }
   hdr.hidden = false;
+  if (LIVE.watch == null) liveKick(); // live map: share this phone's GPS while a round is running (delivery by default)
   const role = S.user.role, admin = role === 'admin';
   const [hashPage, arg] = (location.hash.slice(2) || '').split('/');
   const nav = $('#nav'); nav.innerHTML = ''; nav.classList.remove('open');
@@ -1498,7 +1645,7 @@ async function render() {
   catch (e) { if (S.user) v.append(h('p', { class: 'bad' }, 'Error: ' + e.message)); }
 }
 $('#menu').addEventListener('click', () => $('#nav').classList.toggle('open'));
-$('#logout').addEventListener('click', guard(async () => { await api('logout', 'POST'); S.user = null; S.lists = null; render(); }));
+$('#logout').addEventListener('click', guard(async () => { await api('logout', 'POST'); liveStopGps(); clearTimeout(LIVE.recheck); S.user = null; S.lists = null; render(); }));
 window.addEventListener('hashchange', () => { if (reloadIfUpdated()) return; D.data = null; render(); });
 monthInput.addEventListener('change', () => { D.data = null; });
 render();
