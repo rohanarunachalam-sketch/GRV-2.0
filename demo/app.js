@@ -1146,8 +1146,8 @@ const CART_SVG = `<svg viewBox="0 0 66 42" width="66" height="42" aria-hidden="t
   <g class="cm-wheel"><circle cx="16" cy="30" r="9.5" fill="#fff8" stroke="#5b2e12" stroke-width="2.6"/><path d="M16 20.5v19M6.5 30h19M9.3 23.3l13.4 13.4M22.7 23.3 9.3 36.7" stroke="#5b2e12" stroke-width="1.3"/><circle cx="16" cy="30" r="2.2" fill="#5b2e12"/></g>
   <g class="cm-ox"><path d="M42 26v11M45.5 26.5v10.5M53.5 26.5v10.5M57 26v11" stroke="#6b5a45" stroke-width="2.4" stroke-linecap="round"/>
   <path d="M40 21q-3 4-2 9" stroke="#6b5a45" stroke-width="1.4" fill="none"/>
-  <ellipse cx="49.5" cy="21" rx="10" ry="6.6" fill="#f4f0e6" stroke="#6b5a45" stroke-width="1.3"/><path d="M43 15.5q3.5-5.5 7.5-1" fill="#f4f0e6" stroke="#6b5a45" stroke-width="1.3"/>
-  <ellipse cx="61" cy="17.5" rx="4.2" ry="3.6" fill="#f4f0e6" stroke="#6b5a45" stroke-width="1.3"/><circle cx="62" cy="16.7" r=".9" fill="#222"/>
+  <ellipse class="ox-b" cx="49.5" cy="21" rx="10" ry="6.6" fill="#f4f0e6" stroke="#6b5a45" stroke-width="1.3"/><path class="ox-b" d="M43 15.5q3.5-5.5 7.5-1" fill="#f4f0e6" stroke="#6b5a45" stroke-width="1.3"/>
+  <ellipse class="ox-b" cx="61" cy="17.5" rx="4.2" ry="3.6" fill="#f4f0e6" stroke="#6b5a45" stroke-width="1.3"/><circle cx="62" cy="16.7" r=".9" fill="#222"/>
   <path d="M59 14.6q-1.8-4.8 1.4-7.4M62.4 14.4q2.3-4.6-.2-7.6" stroke="#c0392b" stroke-width="1.8" fill="none" stroke-linecap="round"/></g></svg>`;
 const agoText = (ms) => (ms < 60000 ? Math.max(1, Math.round(ms / 1000)) + ' s ago' : Math.round(ms / 60000) + ' min ago');
 
@@ -1183,7 +1183,25 @@ async function openMap({ d, order, session }) {
   addEventListener('hashchange', close);
 
   const map = Lf.map(box, { zoomControl: true, attributionControl: true });
-  Lf.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map); // free street map, no key needed
+  // map style: Default (street map) or Satellite (Esri photo map with road and place names on top) — both free, no key; the choice is kept on this phone
+  const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/';
+  const styles = {
+    def: [Lf.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' })],
+    sat: [Lf.tileLayer(ESRI + 'World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20, maxNativeZoom: 19, attribution: 'Imagery © Esri, Maxar, Earthstar Geographics' }),
+      Lf.tileLayer(ESRI + 'Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20, maxNativeZoom: 19 }),
+      Lf.tileLayer(ESRI + 'Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20, maxNativeZoom: 19 })],
+  };
+  let style = 'def'; try { if (localStorage.getItem('grv.mapStyle') === 'sat') style = 'sat'; } catch {}
+  const styleBtns = h('div', { class: 'map-style seg' }, [['def', '🗺️ Default'], ['sat', '🛰️ Satellite']].map(([k, l]) => h('button', { 'data-k': k, onclick: () => setStyle(k) }, l)));
+  const setStyle = (k) => {
+    for (const ly of styles[style]) map.removeLayer(ly);
+    style = k; for (const ly of styles[k]) ly.addTo(map);
+    box.classList.toggle('sat', k === 'sat');
+    for (const b of styleBtns.children) b.classList.toggle('on', b.dataset.k === k);
+    try { localStorage.setItem('grv.mapStyle', k); } catch {}
+  };
+  setStyle(style);
+  Lf.DomEvent.disableClickPropagation(styleBtns); box.append(styleBtns);
   map.on('dragstart', () => { follow = null; });
   map.createPane('carts').style.zIndex = 700; // the cart sits above the house name labels
   const labelsBy = () => box.classList.toggle('far', map.getZoom() < 15); // names only when zoomed in enough to read them
@@ -1213,7 +1231,8 @@ async function openMap({ d, order, session }) {
     const step = (t) => { const k = Math.min(1, (t - t0) / dur), e = k * (2 - k); x.m.setLatLng([from.lat + (to[0] - from.lat) * e, from.lng + (to[1] - from.lng) * e]); if (follow === x.key) map.panTo(x.m.getLatLng(), { animate: false }); if (k < 1) x.raf = requestAnimationFrame(step); };
     x.raf = requestAnimationFrame(step);
   };
-  const cartHtml = (p, d0) => `<div class="cm${p.heading != null && p.heading > 180 ? ' west' : ''}"><div class="cm-pulse"></div><div class="cm-body">${CART_SVG}</div><div class="cm-lbl">${p.key === d0.me ? 'You' : p.who} · ${agoText(d0.now - p.at)}</div></div>`;
+  // delivery: green frame, white ox · admin: orange frame, brown ox and a 👑
+  const cartHtml = (p, d0) => { const adm = p.key.startsWith('live_admin'); return `<div class="cm${adm ? ' admin' : ''}${p.heading != null && p.heading > 180 ? ' west' : ''}"><div class="cm-pulse"></div><div class="cm-body">${CART_SVG}</div><div class="cm-lbl">${adm ? '👑 ' : ''}${p.key === d0.me ? 'You' : p.who} · ${agoText(d0.now - p.at)}</div></div>`; };
   let firstFit = true;
   const refresh = () => api('live').then((r) => {
     const seen = new Set();

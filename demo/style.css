@@ -583,3 +583,14 @@ body.map-open{overflow:hidden}
 @keyframes cm-bob{to{translate:0 -1.5px}}
 @keyframes cm-spin{to{transform:rotate(360deg)}}
 @keyframes cm-pulse{from{transform:scale(.5);opacity:1}to{transform:scale(1.6);opacity:0}}
+/* map style switch, and the admin's own maatu vandi (orange frame, brown ox, crown) */
+.map-style{position:absolute;top:10px;right:10px;z-index:1000;box-shadow:var(--shadow-lg);background:#fff}
+.map-style button{font-size:13px;padding:7px 12px;font-weight:600}
+.map-style button.on,.map-style button.on:hover{background:var(--brand);color:#fff}
+.cm .ox-b{fill:#f4f0e6}
+.cm.admin .ox-b{fill:#8b5a2b}
+.cm.admin .cm-body{border-color:#d9730d}
+.cm.admin .cm-body::after{border-top-color:#d9730d}
+.cm.admin .cm-lbl{background:#d9730d}
+.cm.admin .cm-pulse{background:rgba(217,115,13,.38)}
+.map-box.sat .leaflet-tooltip.hm-lbl.off{background:rgba(255,255,255,.92)}
