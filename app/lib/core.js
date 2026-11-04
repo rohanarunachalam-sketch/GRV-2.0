@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY AUTOINCREMENT, name T
 CREATE TABLE IF NOT EXISTS customer_plans(customer_id TEXT, from_date TEXT, am REAL DEFAULT 0, pm REAL DEFAULT 0, price REAL DEFAULT 0, status TEXT DEFAULT 'Active', PRIMARY KEY(customer_id, from_date));
 CREATE TABLE IF NOT EXISTS qty_requests(id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id TEXT, date TEXT, session TEXT, qty REAL, note TEXT DEFAULT '', status TEXT DEFAULT 'Pending', created TEXT, decided TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS customer_locations(customer_id TEXT PRIMARY KEY, lat REAL, lng REAL, acc REAL, marked TEXT);
+CREATE TABLE IF NOT EXISTS road_legs(a TEXT, b TEXT, m REAL, PRIMARY KEY(a, b));
 CREATE TABLE IF NOT EXISTS delivery_runs(date TEXT, session TEXT, started INTEGER, paused_at INTEGER, paused_ms INTEGER DEFAULT 0, ended INTEGER, started_by TEXT, PRIMARY KEY(date, session));
 CREATE TABLE IF NOT EXISTS product_orders(id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, customer_id TEXT, qty REAL, price REAL, date TEXT, status TEXT DEFAULT 'Booked', note TEXT DEFAULT '', created TEXT, created_by TEXT);
 `;
@@ -252,7 +253,7 @@ async function nextId(table, prefix, pad) {
 const routes = [];
 const route = (method, pattern, fn) => routes.push({ method, re: new RegExp('^' + pattern + '$'), fn });
 // delivery staff may also mark houses, set the delivery order (Location Tracker) and start / pause / finish a delivery; the routes themselves stop them changing saved locations
-const deliveryExtra = (key) => key === 'GET /api/locations' || /^PUT \/api\/locations\/[^/]+$/.test(key) || key === 'GET /api/run' || /^(GET|PUT|DELETE) \/api\/live$/.test(key) || /^POST \/api\/run\/(start|pause|resume|end)$/.test(key);
+const deliveryExtra = (key) => key === 'GET /api/locations' || /^PUT \/api\/locations\/[^/]+$/.test(key) || key === 'GET /api/run' || /^(GET|PUT|DELETE) \/api\/live$/.test(key) || key === 'POST /api/road' || /^POST \/api\/run\/(start|pause|resume|end)$/.test(key);
 const DELIVERY_ALLOWED = new Set(['GET /api/me', 'POST /api/logout', 'GET /api/route', 'PUT /api/delivery', 'PUT /api/delivery/unavailable', 'GET /api/notices']);
 const roleAllows = (role, key) => role === 'admin' || (role === 'delivery' && (DELIVERY_ALLOWED.has(key) || deliveryExtra(key))) ||
   (role === 'customer' && (['GET /api/me', 'POST /api/logout'].includes(key) || key.split(' ')[1].startsWith('/api/portal')));
@@ -415,15 +416,47 @@ const kmBetween = (a, b) => {
   const x = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(x));
 };
-// minutes after the start until each customer's milk arrives, following the delivery order
-async function etaOffsets(date, session) {
+// ---- road distances (OSRM — free, OpenStreetMap roads, no key). Each stretch between two saved points is asked for once and kept in road_legs;
+// the customer times use them, and fall back to straight line × ROAD_FACTOR for any stretch not fetched yet (or when OSRM is down)
+const OSRM = 'https://router.project-osrm.org/route/v1/driving/';
+const ptKey = (p) => `${(+p.lat).toFixed(6)},${(+p.lng).toFixed(6)}`;
+const roadLegs = async () => new Map((await all('SELECT a, b, m FROM road_legs')).map((r) => [r.a + '|' + r.b, r.m]));
+async function osrmRoute(pts) { // ≥ 2 points in order → metres per stretch + the encoded road line(s)
+  const legs = [], poly = [];
+  for (let i = 0; i < pts.length - 1; i += 39) { // ≤ 40 points per request (the public server's limits)
+    const part = pts.slice(i, i + 40);
+    const r = await fetch(OSRM + part.map((p) => `${(+p.lng).toFixed(6)},${(+p.lat).toFixed(6)}`).join(';') + '?overview=full&geometries=polyline&steps=false', { signal: AbortSignal.timeout(8000) });
+    const j = await r.json().catch(() => ({}));
+    need(r.ok && j.code === 'Ok' && j.routes && j.routes[0], 'Road route is not available right now');
+    for (const l of j.routes[0].legs) legs.push(l.distance);
+    poly.push(j.routes[0].geometry);
+  }
+  for (let i = 0; i < legs.length; i += 100) { // one statement per 100 stretches (a remote database is slow one row at a time)
+    const chunk = legs.slice(i, i + 100);
+    await run('INSERT OR REPLACE INTO road_legs(a,b,m) VALUES ' + chunk.map(() => '(?,?,?)').join(','), chunk.flatMap((m, k) => [ptKey(pts[i + k]), ptKey(pts[i + k + 1]), Math.round(m)]));
+  }
+  return { legs, poly };
+}
+// today's stops in order (only houses that get milk), with their saved points
+async function stopsToday(date, session) {
   const items = (await routeList(date, session)).filter((it) => (it.qty ?? (it.skip ? 0 : it.def)) > 0 && !it.unavail);
   const locs = new Map((await all('SELECT * FROM customer_locations')).map((r) => [r.customer_id, r]));
-  let prev = await getSetting('farm_location', null), t = 0, km = 0;
+  return { items, locs, farm: await getSetting('farm_location', null) };
+}
+// before a round starts: fetch any road stretch of today's order that isn't saved yet (skipped houses make new stretches)
+async function fillRoadToday(date, session) {
+  const { items, locs, farm } = await stopsToday(date, session), road = await roadLegs();
+  const pts = [farm, ...items.map((it) => locs.get(it.id))].filter(Boolean);
+  if (pts.length > 1 && pts.some((p, i) => i && !road.has(ptKey(pts[i - 1]) + '|' + ptKey(p)))) await osrmRoute(pts);
+}
+// minutes after the start until each customer's milk arrives, following the delivery order
+async function etaOffsets(date, session) {
+  const { items, locs, farm } = await stopsToday(date, session), road = await roadLegs();
+  let prev = farm, t = 0, km = 0;
   const out = new Map();
   for (const it of items) {
     const l = locs.get(it.id);
-    if (l && prev) { const leg = kmBetween(prev, l) * ROAD_FACTOR; km += leg; t += leg / KMH * 60; }
+    if (l && prev) { const m = road.get(ptKey(prev) + '|' + ptKey(l)); const leg = m != null ? m / 1000 : kmBetween(prev, l) * ROAD_FACTOR; km += leg; t += leg / KMH * 60; }
     if (l) prev = l;
     out.set(it.id, { min: t, marked: !!l }); t += STOP_MIN;
   }
@@ -443,6 +476,7 @@ route('POST', '/api/run/(start|pause|resume|end)', async ({ m, body, user }) => 
   const d = today(), r = await runOf(d, body.session), now = Date.now();
   if (m[1] === 'start') {
     need(!r || r.ended, 'Delivery has already started');
+    await fillRoadToday(d, body.session).catch(() => {}); // road distances for the customer times; if OSRM is down the old estimate is used
     await run('INSERT OR REPLACE INTO delivery_runs(date,session,started,paused_at,paused_ms,ended,started_by,last_by) VALUES(?,?,?,NULL,0,NULL,?,?)', [d, body.session, now, user.role, user.role]);
   } else {
     need(r && !r.ended, 'Delivery has not started');
@@ -539,6 +573,21 @@ route('PUT', '/api/live', async ({ body, user }) => {
   const l = validLatLng(body), hd = Number(body.heading);
   await setSetting(liveKey(user), { ...l, heading: Number.isFinite(hd) ? Math.round(hd) : null, at: Date.now(), sessions: running });
   return { ok: true, running };
+});
+// the road route for the map: farm → houses in the order given; saved, so it is only fetched again when the order or a location changes
+route('POST', '/api/road', async ({ body, user }) => {
+  need(['AM', 'PM'].includes(body.session), 'session must be AM or PM'); checkShift(user, body.session);
+  need(Array.isArray(body.ids) && body.ids.length <= 2000, 'ids must be a list');
+  const farm = await getSetting('farm_location', null);
+  const locs = new Map((await all('SELECT * FROM customer_locations')).map((r) => [r.customer_id, r]));
+  const pts = [farm, ...body.ids.map((id) => locs.get(String(id)))].filter(Boolean);
+  if (pts.length < 2) return { ok: true, poly: [], km: 0 };
+  const sig = pts.map(ptKey).join(';'), key = 'road_geo_' + body.session, saved = await getSetting(key, null);
+  if (saved && saved.sig === sig) return { ok: true, poly: saved.poly, km: saved.km };
+  let r; try { r = await osrmRoute(pts); } catch { return { ok: false }; }
+  const km = Math.round(r.legs.reduce((a, b) => a + b, 0) / 100) / 10;
+  await setSetting(key, { sig, poly: r.poly, km });
+  return { ok: true, poly: r.poly, km };
 });
 route('DELETE', '/api/live', async ({ user }) => { await run('DELETE FROM settings WHERE key=?', [liveKey(user)]); return { ok: true }; });
 route('GET', '/api/live', async ({ user }) => {

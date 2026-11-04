@@ -594,3 +594,6 @@ body.map-open{overflow:hidden}
 .cm.admin .cm-lbl{background:#d9730d}
 .cm.admin .cm-pulse{background:rgba(217,115,13,.38)}
 .map-box.sat .leaflet-tooltip.hm-lbl.off{background:rgba(255,255,255,.92)}
+.map-km{font-size:12.5px;font-weight:700;color:var(--mute);white-space:nowrap}
+.map-top b,.map-top .shift-pill{white-space:nowrap}
+.map-top .shift-pill{padding:4px 10px;font-size:13px}

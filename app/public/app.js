@@ -1149,6 +1149,20 @@ const CART_SVG = `<svg viewBox="0 0 66 42" width="66" height="42" aria-hidden="t
   <ellipse class="ox-b" cx="49.5" cy="21" rx="10" ry="6.6" fill="#f4f0e6" stroke="#6b5a45" stroke-width="1.3"/><path class="ox-b" d="M43 15.5q3.5-5.5 7.5-1" fill="#f4f0e6" stroke="#6b5a45" stroke-width="1.3"/>
   <ellipse class="ox-b" cx="61" cy="17.5" rx="4.2" ry="3.6" fill="#f4f0e6" stroke="#6b5a45" stroke-width="1.3"/><circle cx="62" cy="16.7" r=".9" fill="#222"/>
   <path d="M59 14.6q-1.8-4.8 1.4-7.4M62.4 14.4q2.3-4.6-.2-7.6" stroke="#c0392b" stroke-width="1.8" fill="none" stroke-linecap="round"/></g></svg>`;
+// Google / OSRM encoded polyline → [[lat, lng], …]
+function decodePolyline(str) {
+  const out = []; let i = 0, lat = 0, lng = 0;
+  while (i < str.length) {
+    for (const k of [0, 1]) {
+      let b, shift = 0, v = 0;
+      do { b = str.charCodeAt(i++) - 63; v |= (b & 31) << shift; shift += 5; } while (b >= 32);
+      const d = v & 1 ? ~(v >> 1) : v >> 1;
+      if (k) lng += d; else lat += d;
+    }
+    out.push([lat / 1e5, lng / 1e5]);
+  }
+  return out;
+}
 const agoText = (ms) => (ms < 60000 ? Math.max(1, Math.round(ms / 1000)) + ' s ago' : Math.round(ms / 60000) + ' min ago');
 
 // full-screen map: every marked house with its name, the farm, the delivery order line, and the live cart(s)
@@ -1167,11 +1181,11 @@ async function openMap({ d, order, session }) {
   };
   shareBtn.onclick = () => { const on = !shareOn(); if (!on && !confirm('Stop sharing your live location?')) return; setShare(on); paintShare(); toast(on ? 'Your live location shows while a round is running (keep the app open)' : 'Stopped sharing'); };
   paintShare();
-  const box = h('div', { class: 'map-box' });
+  const box = h('div', { class: 'map-box' }), kmPill = h('span', { class: 'map-km', hidden: true });
   const close = () => { clearInterval(poll); removeEventListener('hashchange', close); map.remove(); ov.remove(); document.body.classList.remove('map-open'); };
   let follow = null;
   const ov = h('div', { class: 'map-ov', role: 'dialog', 'aria-label': 'Delivery map' },
-    h('div', { class: 'map-top' }, h('b', {}, '🗺️ Delivery map'), h('span', { class: 'shift-pill' }, session === 'AM' ? '🌅 Morning' : '🌇 Evening'), h('span', { class: 'grow' }),
+    h('div', { class: 'map-top' }, h('b', {}, '🗺️ Map'), h('span', { class: 'shift-pill' }, session === 'AM' ? '🌅 Morning' : '🌇 Evening'), kmPill, h('span', { class: 'grow' }),
       h('button', { class: 'map-x', 'aria-label': 'Close map', onclick: () => close() }, '✕')),
     box, status,
     h('div', { class: 'map-acts' },
@@ -1221,7 +1235,16 @@ async function openMap({ d, order, session }) {
     pts.push([c.lat, c.lng]);
   }
   for (const id of order) { const c = byId.get(id); if (has(c)) line.push([c.lat, c.lng]); }
-  if (line.length > 1) Lf.polyline(line, { color: '#1c7a44', weight: 3, opacity: .55, dashArray: '6 8' }).addTo(map);
+  // straight dashed line first, then the real road route (OSRM) replaces it once it arrives; if it can't be had, the dashed line stays
+  const straight = line.length > 1 ? Lf.polyline(line, { color: '#1c7a44', weight: 3, opacity: .55, dashArray: '6 8' }).addTo(map) : null;
+  if (straight) api('road', 'POST', { session, ids: order }).then((r) => {
+    if (!r.ok || !r.poly.length || !box.isConnected) { if (!r.ok) toast('Road route could not load — showing straight lines', true); return; }
+    const road = r.poly.map(decodePolyline);
+    straight.remove();
+    Lf.polyline(road, { color: '#fff', weight: 8, opacity: .9 }).addTo(map); // white edge so the line shows on the satellite photo too
+    Lf.polyline(road, { color: '#1c7a44', weight: 5, opacity: .9 }).addTo(map);
+    kmPill.textContent = `🛣️ ${r.km} km`; kmPill.title = 'Distance by road'; kmPill.hidden = false;
+  }, () => {});
   const fitAll = () => { const all = [...pts, ...[...carts.values()].map((x) => x.m.getLatLng())]; if (all.length > 1) map.fitBounds(all, { padding: [40, 40], maxZoom: 17 }); else if (all.length) map.setView(all[0], 16); else map.setView([11.0, 78.5], 7); };
   // live carts: glide smoothly to each new position (like food-delivery apps) instead of jumping
   const carts = new Map();
