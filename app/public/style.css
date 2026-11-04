@@ -606,3 +606,7 @@ body.map-open{overflow:hidden}
 .map-recbtn.on{background:#dc2626;color:#fff;border-color:#dc2626}
 .hm-piece{display:grid;gap:6px;border-top:1px solid var(--line);padding-top:6px}
 .hm-piece .map-recbtn{margin:0;width:100%;font-size:13px}
+.rec-tools{padding-top:8px}
+.rec-tools button{font-size:13px}
+.map-rec.wait{color:#92400e;background:#fffbeb;border-top-color:#fde68a;display:grid;gap:4px}
+.map-rec.wait .link{justify-self:start;font-size:13px;padding:0;min-height:0}
