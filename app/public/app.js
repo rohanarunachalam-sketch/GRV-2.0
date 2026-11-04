@@ -14,8 +14,16 @@ const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFract
 const lit = (n) => Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const pad = (n) => String(n).padStart(2, '0');
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
-const monthLabel = (m) => new Date(m + '-01T00:00').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
-const dayLabel = (d) => new Date(d + 'T00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+// Customer language, picked on the Account tab and saved on this phone. Admin and delivery always stay in English.
+// Tamil and Hindi are written the way people talk, keeping everyday words like bill, delivery, password as they are said.
+let LANG = (() => { try { return localStorage.getItem('grv.lang') || 'en'; } catch { return 'en'; } })();
+const langOn = () => (S.user && S.user.role === 'customer' ? LANG : 'en');
+const tr = (en, ta, hi) => ({ ta, hi }[langOn()] ?? en);
+const locale = () => ({ ta: 'ta-IN', hi: 'hi-IN' }[langOn()] || 'en-IN');
+const monthLabel = (m) => new Date(m + '-01T00:00').toLocaleDateString(locale(), { month: 'long', year: 'numeric' });
+const dayLabel = (d) => new Date(d + 'T00:00').toLocaleDateString(locale(), { weekday: 'short', day: 'numeric', month: 'short' });
+const WEEK = () => tr(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], ['தி', 'செ', 'பு', 'வி', 'வெ', 'ச', 'ஞா'], ['सोम', 'मंगल', 'बुध', 'गुरु', 'शुक्र', 'शनि', 'रवि']);
+const sessionName = (s) => ({ AM: tr('Morning', 'காலை', 'सुबह'), PM: tr('Evening', 'சாயங்காலம்', 'शाम'), BOTH: tr('Morning & Evening', 'காலை & சாயங்காலம்', 'सुबह और शाम') }[s]);
 
 // ---------- auto update: a new deploy changes the server's X-App-Version; reload at a quiet moment so nobody has to refresh ----------
 let appVer = null, updateReady = false;
@@ -280,7 +288,7 @@ async function routeView(v) {
 
 // ▶ Start / ⏸ Pause / ✓ Finish for today's round (admin + delivery). Starting is what makes customers see their delivery time.
 const dur = (min) => { const hr = Math.floor(min / 60), m = Math.round(min % 60); return hr ? `${hr} hr${m ? ' ' + m + ' min' : ''}` : `${m} min`; };
-const clock = (ms) => new Date(ms).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
+const clock = (ms) => new Date(ms).toLocaleTimeString(locale(), { hour: 'numeric', minute: '2-digit', hour12: true });
 function runControl(session) {
   const box = h('div', { class: 'run-box' });
   const name = session === 'AM' ? 'Morning' : 'Evening';
@@ -1116,11 +1124,13 @@ function etaCard() {
     api('portal/eta').then((e) => {
       box.innerHTML = '';
       if (e.state === 'none') { box.hidden = true; return; }
-      const when = e.session === 'AM' ? 'morning' : 'evening', win = `${clock(e.from)} – ${clock(e.to)}`;
+      const when = sessionName(e.session), win = `${clock(e.from)} – ${clock(e.to)}`;
       box.hidden = false; box.className = 'eta-card ' + e.state;
-      if (e.state === 'finished') box.append(h('div', { class: 'eta-l' }, `✓ Today’s ${when} delivery is finished`), h('div', { class: 'tag' }, 'Thank you! 🥛'));
-      else if (e.state === 'late') box.append(cartScene(), h('div', { class: 'eta-l' }, 'Your milk is on the way'), h('div', { class: 'tag' }, 'It is taking a little longer today. Sorry for the wait 🙏'));
-      else box.append(cartScene(), h('div', { class: 'eta-l' }, `Your ${when} milk will arrive between`), h('div', { class: 'eta-t' }, win), h('div', { class: 'tag', lang: 'ta' }, `உங்க பால் ${win} க்குள் வரும்`), h('div', { class: 'tag' }, 'Approximate time'));
+      if (e.state === 'finished') box.append(h('div', { class: 'eta-l' }, tr(`✓ Today’s ${when.toLowerCase()} delivery is finished`, `✓ இன்னைக்கு ${when} டெலிவரி முடிஞ்சது`, `✓ आज की ${when} की डिलीवरी हो गई`)), h('div', { class: 'tag' }, tr('Thank you! 🥛', 'நன்றி! 🥛', 'शुक्रिया! 🥛')));
+      else if (e.state === 'late') box.append(cartScene(), h('div', { class: 'eta-l' }, tr('Your milk is on the way', 'உங்க பால் வந்துட்டே இருக்கு', 'आपका दूध रास्ते में है')),
+        h('div', { class: 'tag' }, tr('It is taking a little longer today. Sorry for the wait 🙏', 'இன்னைக்கு கொஞ்சம் லேட் ஆகுது. காத்திருக்க வச்சதுக்கு சாரி 🙏', 'आज थोड़ी देर हो रही है। इंतज़ार के लिए माफ़ कीजिए 🙏')));
+      else box.append(cartScene(), h('div', { class: 'eta-l' }, tr(`Your ${when.toLowerCase()} milk will arrive between`, `உங்க ${when} பால் இந்த நேரத்துக்குள்ள வந்துடும்`, `आपका ${when} का दूध इस समय के बीच आएगा`)), h('div', { class: 'eta-t' }, win),
+        langOn() === 'en' ? h('div', { class: 'tag', lang: 'ta' }, `உங்க பால் ${win} க்குள் வரும்`) : null, h('div', { class: 'tag' }, tr('Approximate time', 'சுமார் இந்த நேரம்', 'लगभग इसी समय')));
     }, () => {});
   };
   load(true); etaTimer = setInterval(() => load(false), 30000);
@@ -1132,12 +1142,12 @@ function choices(title, opts) {
   const name = 'ch' + Math.random().toString(36).slice(2);
   const box = h('fieldset', { class: 'choices' }, h('legend', {}, title),
     opts.map(([v, l]) => h('label', { class: 'choice' }, h('input', { type: 'radio', name, value: v, onchange: () => box.classList.remove('missing') }), h('span', {}, l))),
-    h('div', { class: 'miss-msg' }, '⚠ Choose one'));
+    h('div', { class: 'miss-msg' }, tr('⚠ Choose one', '⚠ ஏதாவது ஒன்னு செலக்ட் பண்ணுங்க', '⚠ कोई एक चुनें')));
   Object.defineProperty(box, 'value', { get: () => box.querySelector('input:checked')?.value || '' });
   box.need = () => {
     if (box.value) return true;
     box.classList.remove('missing'); void box.offsetWidth; box.classList.add('missing'); // restart the shake
-    box.scrollIntoView({ block: 'center', behavior: 'smooth' }); toast(title + ': choose one', true);
+    box.scrollIntoView({ block: 'center', behavior: 'smooth' }); toast(title + tr(': choose one', ': ஒன்னு செலக்ட் பண்ணுங்க', ': कोई एक चुनें'), true);
     return false;
   };
   return box;
@@ -1185,62 +1195,77 @@ pages.portal = async (v) => {
   const d = await api('portal' + (P.month ? '?month=' + P.month : ''));
   P.month = d.month;
   const nameForm = (first) => {
-    const i = h('input', { type: 'text', placeholder: 'Your name', maxlength: 60, required: true, value: d.customer.name, autocomplete: 'name' });
-    return h('form', { class: 'form card', style: first ? 'border-color:var(--brand);margin-bottom:12px' : '', onsubmit: guard(async (e) => { e.preventDefault(); await api('portal/name', 'PUT', { name: i.value }); toast('Name saved'); again(); }) },
-      h('h2', { style: 'margin-top:0' }, first ? 'Welcome! What is your name?' : 'Name on my bill'), h('p', { class: 'tag' }, 'This is the name printed on your milk bill. You can change it any time.'),
-      h('label', {}, 'Your name', i), h('button', { class: 'pri', type: 'submit' }, 'Save name'));
+    const yourName = tr('Your name', 'உங்க பேரு', 'आपका नाम');
+    const i = h('input', { type: 'text', placeholder: yourName, maxlength: 60, required: true, value: d.customer.name, autocomplete: 'name' });
+    return h('form', { class: 'form card', style: first ? 'border-color:var(--brand);margin-bottom:12px' : '', onsubmit: guard(async (e) => { e.preventDefault(); await api('portal/name', 'PUT', { name: i.value }); toast(tr('Name saved', 'பேரு சேவ் ஆயிடுச்சு', 'नाम सेव हो गया')); again(); }) },
+      h('h2', { style: 'margin-top:0' }, first ? tr('Welcome! What is your name?', 'வணக்கம்! உங்க பேரு என்ன?', 'नमस्ते! आपका नाम क्या है?') : tr('Name on my bill', 'பில்ல வர்ற பேரு', 'बिल पर मेरा नाम')),
+      h('p', { class: 'tag' }, tr('This is the name printed on your milk bill. You can change it any time.', 'இந்த பேரு தான் உங்க பால் பில்ல வரும். எப்ப வேணாலும் மாத்திக்கலாம்.', 'यही नाम आपके दूध के बिल पर आएगा। इसे कभी भी बदल सकते हैं।')),
+      h('label', {}, yourName, i), h('button', { class: 'pri', type: 'submit' }, tr('Save name', 'பேரை சேவ் பண்ணுங்க', 'नाम सेव करें')));
   };
   const again = () => { v.innerHTML = ''; pages.portal(v).catch((e) => v.append(h('p', { class: 'bad' }, e.message))); };
   if (isDiwali()) { v.append(diwaliPoster()); diwaliFireworks(); }
-  const tabs = h('div', { class: 'seg' }, [['bill', 'My bill'], ['skip', 'No milk'], ['shop', 'GRV Shop'], ['account', 'Account']].map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
-  v.append(h('div', { class: 'who-card' }, h('div', { class: 'avatar' }, (d.customer.name || d.customer.id).trim()[0]?.toUpperCase() || '?'), h('div', {}, h('h1', {}, d.customer.name || 'Welcome'), h('div', { class: 'tag' }, `Customer ${d.customer.id}`))), d.needs_name ? nameForm(true) : null, etaCard(), h('div', { class: 'bar' }, tabs));
+  const tabs = h('div', { class: 'seg' }, [['bill', tr('My bill', 'என் பில்', 'मेरा बिल')], ['skip', tr('No milk', 'பால் வேண்டாம்', 'दूध नहीं चाहिए')], ['shop', tr('GRV Shop', 'GRV ஷாப்', 'GRV शॉप')], ['account', tr('Account', 'அக்கவுண்ட்', 'अकाउंट')]]
+    .map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
+  v.append(h('div', { class: 'who-card' }, h('div', { class: 'avatar' }, (d.customer.name || d.customer.id).trim()[0]?.toUpperCase() || '?'),
+    h('div', {}, h('h1', {}, d.customer.name || tr('Welcome', 'வணக்கம்', 'नमस्ते')), h('div', { class: 'tag' }, tr('Customer ', 'கஸ்டமர் ', 'ग्राहक ') + d.customer.id))), d.needs_name ? nameForm(true) : null, etaCard(), h('div', { class: 'bar' }, tabs));
 
   if (P.tab === 'bill') {
     const upTo = d.cutoff < d.month + '-01' ? null : d.cutoff;
     const rows = d.days.map((x) => h('tr', { class: x.am === null ? 'mute' : x.am + x.pm === 0 ? 'zero' : '' }, h('td', {}, dayLabel(x.date)), h('td', { class: 'n' }, x.am === null ? '–' : x.am ? lit(x.am) : '0'), h('td', { class: 'n' }, x.pm === null ? '–' : x.pm ? lit(x.pm) : '0'), h('td', { class: 'n' }, x.am === null ? '–' : lit(x.am + x.pm))));
     const m = h('input', { type: 'month', value: d.month, max: d.today.slice(0, 7), onchange: (e) => { if (e.target.value) { P.month = e.target.value; again(); } } });
-    v.append(h('div', { class: 'bar' }, h('label', { class: 'tag' }, 'Month ', m)),
-      h('p', { class: 'tag' }, upTo ? `Updated up to ${dayLabel(upTo)}. Each day is added at ${d.update_hour > 12 ? d.update_hour - 12 : d.update_hour} ${d.update_hour >= 12 ? 'PM' : 'AM'}.` : `Not updated yet — each day is added at ${d.update_hour > 12 ? d.update_hour - 12 : d.update_hour} ${d.update_hour >= 12 ? 'PM' : 'AM'}.`),
-      h('div', { class: 'hero' }, h('div', { class: 'l' }, d.due > 0 ? 'Amount due' : 'All settled'), h('div', { class: 'big' }, inr(Math.max(d.due, 0))),
-        h('div', { class: 'row' }, h('div', {}, 'Milk so far', h('b', {}, lit(d.total) + ' L')), h('div', {}, 'Bill so far', h('b', {}, inr(d.amount))), h('div', {}, 'You paid', h('b', {}, inr(d.paid))), h('div', {}, 'Pending', h('b', {}, inr(Math.max(d.due, 0))))),
+    const hr = d.update_hour, h12 = hr % 12 || 12;
+    const at = tr(`${h12} ${hr >= 12 ? 'PM' : 'AM'}`, `${hr < 12 ? 'காலை' : hr < 16 ? 'மதியம்' : hr < 19 ? 'சாயங்காலம்' : 'ராத்திரி'} ${h12} மணிக்கு`, `${hr < 12 ? 'सुबह' : hr < 16 ? 'दोपहर' : hr < 19 ? 'शाम' : 'रात'} ${h12} बजे`);
+    const Total = tr('Total', 'மொத்தம்', 'कुल'), Item = tr('Item', 'பொருள்', 'सामान');
+    v.append(h('div', { class: 'bar' }, h('label', { class: 'tag' }, tr('Month ', 'மாசம் ', 'महीना '), m)),
+      h('p', { class: 'tag' }, upTo ? tr(`Updated up to ${dayLabel(upTo)}. Each day is added at ${at}.`, `${dayLabel(upTo)} வரைக்கும் அப்டேட் ஆயிருக்கு. தினமும் ${at} அன்னைக்கு கணக்கு சேரும்.`, `${dayLabel(upTo)} तक अपडेट है। हर दिन का हिसाब ${at} जुड़ता है।`)
+        : tr(`Not updated yet — each day is added at ${at}.`, `இன்னும் அப்டேட் ஆகல — தினமும் ${at} அன்னைக்கு கணக்கு சேரும்.`, `अभी अपडेट नहीं हुआ — हर दिन का हिसाब ${at} जुड़ता है।`)),
+      h('div', { class: 'hero' }, h('div', { class: 'l' }, d.due > 0 ? tr('Amount due', 'கட்ட வேண்டிய பணம்', 'बाकी रकम') : tr('All settled', 'எல்லாம் கட்டியாச்சு', 'सब चुका दिया')), h('div', { class: 'big' }, inr(Math.max(d.due, 0))),
+        h('div', { class: 'row' }, h('div', {}, tr('Milk so far', 'இதுவரை பால்', 'अब तक दूध'), h('b', {}, lit(d.total) + ' L')), h('div', {}, tr('Bill so far', 'இதுவரை பில்', 'अब तक बिल'), h('b', {}, inr(d.amount))),
+          h('div', {}, tr('You paid', 'நீங்க கட்டினது', 'आपने दिए'), h('b', {}, inr(d.paid))), h('div', {}, tr('Pending', 'பாக்கி', 'बाकी'), h('b', {}, inr(Math.max(d.due, 0))))),
         null),
-      d.paid > 0 ? h('div', { class: 'thanks' }, h('div', { class: 'tick' }, '✓'), h('div', {}, h('b', {}, d.due > 0 ? 'Thank you for your payment!' : 'Thank you! Your bill is paid in full.'),
-        h('div', { class: 'tag' }, d.due > 0 ? `We received ${inr(d.paid)}. ${inr(d.due)} is still pending.` : `We received ${inr(d.paid)}. Nothing is pending.`))) : null,
+      d.paid > 0 ? h('div', { class: 'thanks' }, h('div', { class: 'tick' }, '✓'), h('div', {}, h('b', {}, d.due > 0 ? tr('Thank you for your payment!', 'பணம் கட்டினதுக்கு நன்றி!', 'पेमेंट के लिए शुक्रिया!') : tr('Thank you! Your bill is paid in full.', 'நன்றி! உங்க பில் முழுசா கட்டியாச்சு.', 'शुक्रिया! आपका पूरा बिल चुक गया है।')),
+        h('div', { class: 'tag' }, d.due > 0 ? tr(`We received ${inr(d.paid)}. ${inr(d.due)} is still pending.`, `${inr(d.paid)} வந்துடுச்சு. இன்னும் ${inr(d.due)} பாக்கி இருக்கு.`, `${inr(d.paid)} मिल गए। ${inr(d.due)} अभी बाकी है।`)
+          : tr(`We received ${inr(d.paid)}. Nothing is pending.`, `${inr(d.paid)} வந்துடுச்சு. எந்த பாக்கியும் இல்ல.`, `${inr(d.paid)} मिल गए। कुछ बाकी नहीं है।`)))) : null,
       monthCalendar(d),
-      h('h2', {}, 'Daily details'),
-      h('div', { class: 'tablewrap noselect' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Morning', 'Evening', 'Litres'].map((t, i) => h('th', { class: i ? 'n' : '' }, t)))), h('tbody', {}, rows),
-        h('tfoot', {}, h('tr', {}, h('td', {}, 'Total'), h('td', { class: 'n' }, lit(d.am)), h('td', { class: 'n' }, lit(d.pm)), h('td', { class: 'n' }, lit(d.total)))))),
-      d.extras.length ? h('div', {}, h('h2', {}, 'GRV Shop items delivered'), h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Date', 'Item', 'Qty', 'Amount'].map((t, i) => h('th', { class: i > 1 ? 'n' : '' }, t)))),
-        h('tbody', {}, d.extras.map((x) => h('tr', {}, h('td', {}, dayLabel(x.date)), h('td', {}, x.product || 'Item'), h('td', { class: 'n' }, qtyText(x.qty, x.unit)), h('td', { class: 'n' }, inr(x.qty * x.price))))),
-        h('tfoot', {}, h('tr', {}, h('td', { colspan: 3 }, 'GRV Shop total (included in your bill)'), h('td', { class: 'n' }, inr(d.extras_total))))))) : null,
-      d.payments.length ? h('div', {}, h('h2', {}, 'Payments received'), h('div', { class: 'tablewrap' }, h('table', {}, h('tbody', {}, d.payments.map((p) => h('tr', {}, h('td', {}, p.date), h('td', {}, p.mode || ''), h('td', { class: 'n' }, inr(p.amount))))))))  : null,
-      h('p', { class: 'tag' }, `Rate: ${inr(d.customer.price)} per litre.`));
+      h('h2', {}, tr('Daily details', 'தினசரி கணக்கு', 'रोज़ का हिसाब')),
+      h('div', { class: 'tablewrap noselect' }, h('table', {}, h('thead', {}, h('tr', {}, [tr('Date', 'தேதி', 'तारीख'), sessionName('AM'), sessionName('PM'), tr('Litres', 'லிட்டர்', 'लीटर')].map((t, i) => h('th', { class: i ? 'n' : '' }, t)))), h('tbody', {}, rows),
+        h('tfoot', {}, h('tr', {}, h('td', {}, Total), h('td', { class: 'n' }, lit(d.am)), h('td', { class: 'n' }, lit(d.pm)), h('td', { class: 'n' }, lit(d.total)))))),
+      d.extras.length ? h('div', {}, h('h2', {}, tr('GRV Shop items delivered', 'வந்த GRV ஷாப் பொருட்கள்', 'GRV शॉप से आया सामान')), h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, [tr('Date', 'தேதி', 'तारीख'), Item, tr('Qty', 'அளவு', 'मात्रा'), tr('Amount', 'தொகை', 'रकम')].map((t, i) => h('th', { class: i > 1 ? 'n' : '' }, t)))),
+        h('tbody', {}, d.extras.map((x) => h('tr', {}, h('td', {}, dayLabel(x.date)), h('td', {}, x.product || Item), h('td', { class: 'n' }, qtyText(x.qty, x.unit)), h('td', { class: 'n' }, inr(x.qty * x.price))))),
+        h('tfoot', {}, h('tr', {}, h('td', { colspan: 3 }, tr('GRV Shop total (included in your bill)', 'GRV ஷாப் மொத்தம் (உங்க பில்லிலேயே சேர்ந்திருக்கு)', 'GRV शॉप कुल (आपके बिल में जुड़ा है)')), h('td', { class: 'n' }, inr(d.extras_total))))))) : null,
+      d.payments.length ? h('div', {}, h('h2', {}, tr('Payments received', 'வந்த பணம்', 'मिले पेमेंट')), h('div', { class: 'tablewrap' }, h('table', {}, h('tbody', {}, d.payments.map((p) => h('tr', {}, h('td', {}, p.date), h('td', {}, p.mode || ''), h('td', { class: 'n' }, inr(p.amount))))))))  : null,
+      h('p', { class: 'tag' }, tr(`Rate: ${inr(d.customer.price)} per litre.`, `விலை: லிட்டருக்கு ${inr(d.customer.price)}.`, `रेट: ${inr(d.customer.price)} एक लीटर का।`)));
   } else if (P.tab === 'shop') {
     const sh = await api('portal/products');
     const card = (i) => {
       const dec = i.unit === 'Litre' || i.unit === 'Kg';
-      const q = h('input', { type: 'number', min: dec ? 0.25 : 1, step: dec ? 'any' : 1, inputmode: dec ? 'decimal' : 'numeric', placeholder: dec ? 'Litres' : 'How many', 'aria-label': i.name + ' quantity', disabled: !i.left });
-      const go = guard(async () => { await api('portal/orders', 'POST', { product_id: i.id, qty: q.value }); toast('Booked!'); again(); });
-      return h('form', { class: 'rcard', onsubmit: (e) => { e.preventDefault(); go(); } }, h('div', { class: 'rname' }, i.name), h('div', { class: 'tag' }, `${inr(i.price)} per ${i.unit === 'Nos' ? 'piece' : i.unit.toLowerCase()}`),
-        h('div', { style: 'margin:8px 0' }, i.left ? h('b', {}, `${qtyText(i.left, i.unit)} available`) : h('b', { class: 'bad' }, 'Sold out')),
-        h('div', { class: 'bar' }, q, h('button', { class: 'pri', type: 'submit', disabled: !i.left }, 'Book')));
+      const q = h('input', { type: 'number', min: dec ? 0.25 : 1, step: dec ? 'any' : 1, inputmode: dec ? 'decimal' : 'numeric', placeholder: dec ? tr('Litres', 'எத்தனை லிட்டர்', 'कितने लीटर') : tr('How many', 'எத்தனை', 'कितने'), 'aria-label': i.name + ' quantity', disabled: !i.left });
+      const go = guard(async () => { await api('portal/orders', 'POST', { product_id: i.id, qty: q.value }); toast(tr('Booked!', 'புக் ஆயிடுச்சு!', 'बुक हो गया!')); again(); });
+      const per = { Nos: tr('piece', 'ஒன்னு', 'पीस'), Litre: tr('litre', 'லிட்டர்', 'लीटर'), Kg: tr('kg', 'கிலோ', 'किलो') }[i.unit] || i.unit.toLowerCase();
+      return h('form', { class: 'rcard', onsubmit: (e) => { e.preventDefault(); go(); } }, h('div', { class: 'rname' }, i.name), h('div', { class: 'tag' }, tr(`${inr(i.price)} per ${per}`, `${inr(i.price)} / ${per}`, `${inr(i.price)} / ${per}`)),
+        h('div', { style: 'margin:8px 0' }, i.left ? h('b', {}, tr(`${qtyText(i.left, i.unit)} available`, `${qtyText(i.left, i.unit)} இருக்கு`, `${qtyText(i.left, i.unit)} बचा है`)) : h('b', { class: 'bad' }, tr('Sold out', 'தீர்ந்துடுச்சு', 'खत्म हो गया'))),
+        h('div', { class: 'bar' }, q, h('button', { class: 'pri', type: 'submit', disabled: !i.left }, tr('Book', 'புக் பண்ணு', 'बुक करें'))));
     };
-    v.append(h('h2', { style: 'margin-top:0' }, 'GRV Shop'), h('p', { class: 'tag' }, 'Book egg, ghee, curd and more. The quantity left goes down as people book. The admin will deliver it to you.'),
-      sh.items.length ? h('div', { class: 'cards-list' }, sh.items.map(card)) : h('p', { class: 'mute' }, 'Nothing is available to book right now.'),
-      h('h2', {}, 'My bookings'),
-      sh.orders.length ? h('div', { class: 'cards-list' }, sh.orders.map((o) => h('div', { class: 'rcard' }, h('div', { class: 'rname' }, `${o.product || 'Item'} — ${qtyText(o.qty, o.unit)}`),
-        h('div', { class: 'tag' }, `${dayLabel(o.date)} · ${inr(o.qty * o.price)}`), h('div', { style: 'margin-top:6px' }, pill(o.status)),
-        o.status === 'Booked' ? h('div', { class: 'ract' }, h('button', { class: 'abs', onclick: guard(async () => { if (!confirm('Cancel this booking?')) return; await api('portal/orders/' + o.id, 'DELETE'); toast('Cancelled'); again(); }) }, 'Cancel')) : null)))
-        : h('p', { class: 'mute' }, 'You have not booked anything yet.'));
+    const status = (s) => ({ Booked: tr('Booked', 'புக் ஆயிருக்கு', 'बुक है'), Delivered: tr('Delivered', 'கொடுத்தாச்சு', 'पहुँच गया'), Cancelled: tr('Cancelled', 'கேன்சல் ஆச்சு', 'कैंसल हुआ') }[s] || s);
+    v.append(h('h2', { style: 'margin-top:0' }, tr('GRV Shop', 'GRV ஷாப்', 'GRV शॉप')),
+      h('p', { class: 'tag' }, tr('Book egg, ghee, curd and more. The quantity left goes down as people book. The admin will deliver it to you.',
+        'முட்டை, நெய், தயிர் எல்லாம் இங்கயே புக் பண்ணலாம். மத்தவங்க புக் பண்ண பண்ண இருக்கிற அளவு குறையும். நாங்களே உங்க வீட்டுக்கு கொண்டு வந்து தருவோம்.',
+        'अंडे, घी, दही और भी बहुत कुछ यहीं बुक करें। जैसे-जैसे लोग बुक करते हैं, बचा हुआ सामान कम होता जाता है। हम आपके घर पहुँचा देंगे।')),
+      sh.items.length ? h('div', { class: 'cards-list' }, sh.items.map(card)) : h('p', { class: 'mute' }, tr('Nothing is available to book right now.', 'இப்போ புக் பண்ண எதுவும் இல்ல.', 'अभी बुक करने के लिए कुछ नहीं है।')),
+      h('h2', {}, tr('My bookings', 'நான் புக் பண்ணது', 'मेरी बुकिंग')),
+      sh.orders.length ? h('div', { class: 'cards-list' }, sh.orders.map((o) => h('div', { class: 'rcard' }, h('div', { class: 'rname' }, `${o.product || tr('Item', 'பொருள்', 'सामान')} — ${qtyText(o.qty, o.unit)}`),
+        h('div', { class: 'tag' }, `${dayLabel(o.date)} · ${inr(o.qty * o.price)}`), h('div', { style: 'margin-top:6px' }, h('span', { class: 'pill ' + o.status }, status(o.status))),
+        o.status === 'Booked' ? h('div', { class: 'ract' }, h('button', { class: 'abs', onclick: guard(async () => { if (!confirm(tr('Cancel this booking?', 'இந்த புக்கிங்க கேன்சல் பண்ணவா?', 'यह बुकिंग कैंसल करें?'))) return; await api('portal/orders/' + o.id, 'DELETE'); toast(tr('Cancelled', 'கேன்சல் ஆயிடுச்சு', 'कैंसल हो गया')); again(); }) }, tr('Cancel', 'கேன்சல்', 'कैंसल'))) : null)))
+        : h('p', { class: 'mute' }, tr('You have not booked anything yet.', 'இன்னும் எதுவும் புக் பண்ணல.', 'अभी तक कुछ बुक नहीं किया।')));
   } else if (P.tab === 'skip') {
     // a fun pop-up after the request is sent; each request shows the next line in turn, then starts over
     const NO_MILK_FUN = [
-      ['Planning to go out, I see… 👀😂 Enjoy!', 'வெளியே போக பிளான் பண்ணிட்டீங்க போல… 👀😂 Enjoy பண்ணுங்க!'],
-      ['Aha… taking a day off from us, I see! 😏😂', 'ஆஹா… எங்களுக்கும் ஒரு நாள் லீவு கொடுக்கிறீங்க போல! 😏😂'],
-      ['Looks like you have plans without us! 😂 Enjoy!', 'எங்களை விட்டுட்டு ஏதோ பிளான் இருக்கு போல! 😂 Enjoy பண்ணுங்க!'],
-      ['Looks like the milkman gets a little break! 🛵😂', 'பால்காரருக்கு ஒரு டெலிவரி லீவு! 🛵😂'],
-      ['Aha… saving space in the fridge, I see! 😏🥛😂', 'ஆஹா… ஃப்ரிட்ஜ்ல கொஞ்சம் இடம் சேமிக்கிறீங்க போல! 😏🥛😂'],
-      ['Fine… we’ll keep your bottle waiting for tomorrow! 😏🥛❤️', 'சரி… உங்க பாட்டில் நாளைக்கு வரைக்கும் காத்திருக்கட்டும்! 😏🥛❤️']];
+      ['Planning to go out, I see… 👀😂 Enjoy!', 'வெளியே போக பிளான் பண்ணிட்டீங்க போல… 👀😂 Enjoy பண்ணுங்க!', 'लगता है बाहर घूमने का प्लान है… 👀😂 मज़े कीजिए!'],
+      ['Aha… taking a day off from us, I see! 😏😂', 'ஆஹா… எங்களுக்கும் ஒரு நாள் லீவு கொடுக்கிறீங்க போல! 😏😂', 'अच्छा… हमसे एक दिन की छुट्टी ले रहे हैं! 😏😂'],
+      ['Looks like you have plans without us! 😂 Enjoy!', 'எங்களை விட்டுட்டு ஏதோ பிளான் இருக்கு போல! 😂 Enjoy பண்ணுங்க!', 'लगता है हमारे बिना कोई प्लान है! 😂 मज़े कीजिए!'],
+      ['Looks like the milkman gets a little break! 🛵😂', 'பால்காரருக்கு ஒரு டெலிவரி லீவு! 🛵😂', 'दूधवाले भैया को भी थोड़ी छुट्टी! 🛵😂'],
+      ['Aha… saving space in the fridge, I see! 😏🥛😂', 'ஆஹா… ஃப்ரிட்ஜ்ல கொஞ்சம் இடம் சேமிக்கிறீங்க போல! 😏🥛😂', 'अच्छा… फ्रिज में जगह बचा रहे हैं! 😏🥛😂'],
+      ['Fine… we’ll keep your bottle waiting for tomorrow! 😏🥛❤️', 'சரி… உங்க பாட்டில் நாளைக்கு வரைக்கும் காத்திருக்கட்டும்! 😏🥛❤️', 'ठीक है… आपकी बोतल कल तक इंतज़ार करेगी! 😏🥛❤️']];
     // sad cow for the pop-up: head sways and a tear rolls down (animation in style.css)
     const SAD_COW = `<svg viewBox="0 0 120 112" width="110" height="103">
       <g class="cow-head">
@@ -1259,14 +1284,14 @@ pages.portal = async (v) => {
       </g></svg>`;
     const noMilkFun = (days, from) => {
       let i = 0; try { i = (Number(localStorage.getItem('grv.noMilkFun')) || 0) % NO_MILK_FUN.length; localStorage.setItem('grv.noMilkFun', i + 1); } catch {}
-      const [en, ta] = NO_MILK_FUN[i];
+      const [en, ta, hi] = NO_MILK_FUN[i];
       const dlg = $('#dlg'); dlg.innerHTML = '';
       const cow = h('div', { class: 'sad-cow', 'aria-hidden': 'true' });
       cow.innerHTML = SAD_COW;
       dlg.append(h('form', { class: 'form funny', method: 'dialog' }, cow,
-        h('h1', {}, 'No milk — ' + (days === 1 ? dayLabel(from) : `${days} days`)),
-        h('p', {}, en), h('p', { lang: 'ta' }, 'இன்னைக்கு பால் இல்லை — ' + ta),
-        h('p', { class: 'tag' }, 'Your delivery boy and the admin are notified.'),
+        h('h1', {}, tr('No milk — ', 'பால் வேண்டாம் — ', 'दूध नहीं — ') + (days === 1 ? dayLabel(from) : tr(`${days} days`, `${days} நாள்`, `${days} दिन`))),
+        h('p', {}, tr(en, ta, hi)), langOn() === 'en' ? h('p', { lang: 'ta' }, 'இன்னைக்கு பால் இல்லை — ' + ta) : null,
+        h('p', { class: 'tag' }, tr('Your delivery boy and the admin are notified.', 'உங்க டெலிவரி பையனுக்கும் அட்மினுக்கும் சொல்லியாச்சு.', 'आपके डिलीवरी वाले भैया और एडमिन को बता दिया है।')),
         h('div', { class: 'acts' }, h('button', { class: 'pri', type: 'submit' }, 'OK 👍'))));
       dlg.showModal();
     };
@@ -1281,7 +1306,8 @@ pages.portal = async (v) => {
     const showSum = () => {
       const l = [...picked].sort();
       sum.className = 'pick-sum' + (l.length ? ' has' : '');
-      sum.textContent = l.length ? `✕ No milk on ${l.length} day${l.length > 1 ? 's' : ''}: ${l.map(dayLabel).join(', ')}` : 'Tap the days you don’t need milk. Tap again to undo.';
+      sum.textContent = l.length ? tr(`✕ No milk on ${l.length} day${l.length > 1 ? 's' : ''}: `, `✕ ${l.length} நாள் பால் வேண்டாம்: `, `✕ ${l.length} दिन दूध नहीं: `) + l.map(dayLabel).join(', ')
+        : tr('Tap the days you don’t need milk. Tap again to undo.', 'பால் வேண்டாத நாளை தொடுங்க. திரும்ப தொட்டா மாறிடும்.', 'जिस दिन दूध नहीं चाहिए, उस तारीख को दबाइए। दोबारा दबाने से हट जाएगा।');
     };
     const cal = h('div', { class: 'cal noselect pick-cal' });
     const drawCal = () => {
@@ -1294,7 +1320,7 @@ pages.portal = async (v) => {
         if (!date) return h('div', {});
         const off = date < d.today || date > lastDay, was = asked.has(date);
         const el = h('div', { class: 'cal-d' + (off ? ' past' : was ? ' asked' : picked.has(date) ? ' pick' : '') + (date === d.today ? ' today' : ''), style: `--w:${Math.floor(i / 7) + (i % 7)}`,
-          title: was ? 'Already asked: no milk' : '', role: off || was ? null : 'button', tabindex: off || was ? null : 0, 'aria-pressed': off || was ? null : String(picked.has(date)) }, Number(date.slice(8)));
+          title: was ? tr('Already asked: no milk', 'ஏற்கனவே சொல்லியாச்சு: பால் வேண்டாம்', 'पहले ही बता दिया: दूध नहीं') : '', role: off || was ? null : 'button', tabindex: off || was ? null : 0, 'aria-pressed': off || was ? null : String(picked.has(date)) }, Number(date.slice(8)));
         if (!off && !was) {
           const tap = () => { picked.has(date) ? picked.delete(date) : picked.add(date); el.classList.toggle('pick', picked.has(date)); el.setAttribute('aria-pressed', String(picked.has(date))); cal.classList.remove('missing'); showSum(); };
           el.addEventListener('click', tap);
@@ -1304,11 +1330,11 @@ pages.portal = async (v) => {
       };
       cal.innerHTML = '';
       cal.append(h('div', { class: 'cal-nav' },
-          h('button', { type: 'button', class: 'cal-arrow', disabled: !canPrev, 'aria-label': 'Previous month', onclick: () => go(-1) }, '‹'),
+          h('button', { type: 'button', class: 'cal-arrow', disabled: !canPrev, 'aria-label': tr('Previous month', 'போன மாசம்', 'पिछला महीना'), onclick: () => go(-1) }, '‹'),
           h('b', {}, monthLabel(calMonth)),
-          h('button', { type: 'button', class: 'cal-arrow', disabled: !canNext, 'aria-label': 'Next month', onclick: () => go(1) }, '›')),
-        h('div', { class: 'cal-grid' }, ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((w) => h('div', { class: 'cal-w' }, w)), cells.map(cell)),
-        h('div', { class: 'cal-key' }, h('span', { class: 'pick' }, 'No milk (your pick)'), asked.size ? h('span', { class: 'asked' }, 'Already asked') : null));
+          h('button', { type: 'button', class: 'cal-arrow', disabled: !canNext, 'aria-label': tr('Next month', 'அடுத்த மாசம்', 'अगला महीना'), onclick: () => go(1) }, '›')),
+        h('div', { class: 'cal-grid' }, WEEK().map((w) => h('div', { class: 'cal-w' }, w)), cells.map(cell)),
+        h('div', { class: 'cal-key' }, h('span', { class: 'pick' }, tr('No milk (your pick)', 'பால் வேண்டாம் (நீங்க தொட்டது)', 'दूध नहीं (आपने चुना)')), asked.size ? h('span', { class: 'asked' }, tr('Already asked', 'ஏற்கனவே சொன்னது', 'पहले बता दिया')) : null));
     };
     drawCal(); showSum();
     // picked days become one request per run of days in a row (Mon+Tue+Wed = 1 request, Fri = another)
@@ -1318,23 +1344,37 @@ pages.portal = async (v) => {
       return out;
     };
     // nothing is picked at first, so an evening-only customer can't skip the morning by mistake
-    const ses = choices('Which delivery', [['AM', '🌅 Morning'], ['PM', '🌇 Evening'], ['BOTH', '🌅🌇 Morning & Evening']]);
-    const note = h('input', { type: 'text', placeholder: 'Optional note (e.g. out of town)', maxlength: 200 });
-    v.append(h('form', { class: 'form card', onsubmit: guard(async (e) => { e.preventDefault(); if (!picked.size) { cal.classList.remove('missing'); void cal.offsetWidth; cal.classList.add('missing'); cal.scrollIntoView({ block: 'center', behavior: 'smooth' }); return toast('Tap at least one day on the calendar', true); }
+    const ses = choices(tr('Which delivery', 'எந்த டெலிவரி?', 'कौन सी डिलीवरी?'), [['AM', '🌅 ' + sessionName('AM')], ['PM', '🌇 ' + sessionName('PM')], ['BOTH', '🌅🌇 ' + sessionName('BOTH')]]);
+    const note = h('input', { type: 'text', placeholder: tr('Optional note (e.g. out of town)', 'ஏதாவது சொல்லணும்னா (உதா: ஊருக்கு போறோம்)', 'कुछ बताना हो तो (जैसे: शहर से बाहर हैं)'), maxlength: 200 });
+    v.append(h('form', { class: 'form card', onsubmit: guard(async (e) => { e.preventDefault(); if (!picked.size) { cal.classList.remove('missing'); void cal.offsetWidth; cal.classList.add('missing'); cal.scrollIntoView({ block: 'center', behavior: 'smooth' }); return toast(tr('Tap at least one day on the calendar', 'காலண்டர்ல ஒரு நாளாவது தொடுங்க', 'कैलेंडर में कम से कम एक दिन चुनिए'), true); }
         if (!ses.need()) return;
         const list = runs();
         for (const [from, to] of list) { await api('portal/skips', 'POST', { from, to, session: ses.value, note: note.value }); }
         noMilkFun(picked.size, list[0][0]); again(); }) },
-      h('h2', { style: 'margin-top:0' }, "I don't need milk"), h('p', { class: 'tag' }, 'Your delivery boy and the admin are notified. You are not billed for the days you skip. You can pause from today too.'),
-      cal, sum, ses, h('label', {}, 'Note', note), h('button', { class: 'pri', type: 'submit' }, 'Send request')),
-      h('h2', {}, 'Your requests'),
-      d.skips.length ? h('div', { class: 'cards-list' }, d.skips.map((k) => h('div', { class: 'rcard' }, h('div', { class: 'rname' }, k.from === k.to ? dayLabel(k.from) : `${dayLabel(k.from)} → ${dayLabel(k.to)}`), h('div', { class: 'tag' }, { AM: 'Morning', PM: 'Evening', BOTH: 'Morning & Evening' }[k.session] + (k.note ? ' · ' + k.note : '')),
-        h('div', { class: 'ract' }, h('button', { class: 'abs', onclick: guard(async () => { if (!confirm(k.from <= d.today ? 'Start getting milk again from today?' : 'Cancel this request?')) return; await api('portal/skips/' + k.id, 'DELETE'); toast('Done'); again(); }) }, k.from <= d.today ? 'Resume milk from today' : 'Cancel'))))) : h('p', { class: 'mute' }, 'No active requests.'));
+      h('h2', { style: 'margin-top:0' }, tr("I don't need milk", 'எனக்கு பால் வேண்டாம்', 'मुझे दूध नहीं चाहिए')),
+      h('p', { class: 'tag' }, tr('Your delivery boy and the admin are notified. You are not billed for the days you skip. You can pause from today too.',
+        'உங்க டெலிவரி பையனுக்கும் அட்மினுக்கும் சொல்லிடுவோம். பால் வாங்காத நாளுக்கு பில் போட மாட்டோம். இன்னைக்கே கூட நிறுத்திக்கலாம்.',
+        'आपके डिलीवरी वाले भैया और एडमिन को बता दिया जाएगा। जिन दिनों दूध नहीं लेंगे, उनका पैसा नहीं लगेगा। आज से भी रोक सकते हैं।')),
+      cal, sum, ses, h('label', {}, tr('Note', 'குறிப்பு', 'नोट'), note), h('button', { class: 'pri', type: 'submit' }, tr('Send request', 'அனுப்புங்க', 'भेजें'))),
+      h('h2', {}, tr('Your requests', 'நீங்க சொன்னது', 'आपकी रिक्वेस्ट')),
+      d.skips.length ? h('div', { class: 'cards-list' }, d.skips.map((k) => h('div', { class: 'rcard' }, h('div', { class: 'rname' }, k.from === k.to ? dayLabel(k.from) : `${dayLabel(k.from)} → ${dayLabel(k.to)}`), h('div', { class: 'tag' }, sessionName(k.session) + (k.note ? ' · ' + k.note : '')),
+        h('div', { class: 'ract' }, h('button', { class: 'abs', onclick: guard(async () => {
+          if (!confirm(k.from <= d.today ? tr('Start getting milk again from today?', 'இன்னைக்கே மறுபடியும் பால் வேணுமா?', 'आज से फिर से दूध चालू करें?') : tr('Cancel this request?', 'இதை கேன்சல் பண்ணவா?', 'यह रिक्वेस्ट कैंसल करें?'))) return;
+          await api('portal/skips/' + k.id, 'DELETE'); toast(tr('Done', 'சரி, ஆயிடுச்சு', 'हो गया')); again(); }) },
+        k.from <= d.today ? tr('Resume milk from today', 'இன்னைக்கே பால் வேணும்', 'आज से दूध चालू करें') : tr('Cancel', 'கேன்சல்', 'कैंसल')))))) : h('p', { class: 'mute' }, tr('No active requests.', 'இப்போ எதுவும் இல்ல.', 'अभी कोई रिक्वेस्ट नहीं है।')));
   } else {
+    // language for this phone: each button shows its own name, so anyone can find theirs whatever is showing now
+    const langCard = h('div', { class: 'form card' }, h('h2', { style: 'margin-top:0' }, tr('Language', 'மொழி', 'भाषा')),
+      h('p', { class: 'tag' }, tr('Choose the language you want to see the app in.', 'ஆப் எந்த மொழியில வரணும்னு செலக்ட் பண்ணுங்க.', 'ऐप किस भाषा में दिखे, चुनिए।')),
+      h('div', { class: 'seg lang-pick' }, [['en', 'English'], ['ta', 'தமிழ்'], ['hi', 'हिंदी']].map(([k, l]) => h('button', { type: 'button', lang: k, class: LANG === k ? 'on' : '', onclick: () => {
+        LANG = k; try { localStorage.setItem('grv.lang', k); } catch {}
+        render().then(() => toast(tr('Language changed', 'மொழி மாத்தியாச்சு', 'भाषा बदल गई')));
+      } }, l))));
     const o = h('input', { type: 'password', autocomplete: 'current-password', required: true }), n1 = h('input', { type: 'password', autocomplete: 'new-password', minlength: 6, required: true }), n2 = h('input', { type: 'password', autocomplete: 'new-password', minlength: 6, required: true });
-    v.append(nameForm(false), h('form', { class: 'form card', style: 'margin-top:12px', onsubmit: guard(async (e) => { e.preventDefault(); if (n1.value !== n2.value) return toast('New passwords do not match', true); await api('portal/password', 'PUT', { old: o.value, password: n1.value }); toast('Password changed'); again(); }) },
-      h('h2', { style: 'margin-top:0' }, 'Change password'), h('p', { class: 'tag' }, 'If you forget your password, ask the admin to reset it.'),
-      h('label', {}, 'Current password', pwBox(o)), h('label', {}, 'New password (min 6 characters)', pwBox(n1)), h('label', {}, 'Repeat new password', pwBox(n2)), h('button', { class: 'pri', type: 'submit' }, 'Change password')));
+    v.append(langCard, h('div', { style: 'margin-top:12px' }, nameForm(false)), h('form', { class: 'form card', style: 'margin-top:12px', onsubmit: guard(async (e) => { e.preventDefault(); if (n1.value !== n2.value) return toast(tr('New passwords do not match', 'புது பாஸ்வேர்டு ரெண்டும் ஒன்னா இல்ல', 'दोनों नए पासवर्ड एक जैसे नहीं हैं'), true); await api('portal/password', 'PUT', { old: o.value, password: n1.value }); toast(tr('Password changed', 'பாஸ்வேர்டு மாத்தியாச்சு', 'पासवर्ड बदल गया')); again(); }) },
+      h('h2', { style: 'margin-top:0' }, tr('Change password', 'பாஸ்வேர்டு மாத்துங்க', 'पासवर्ड बदलें')), h('p', { class: 'tag' }, tr('If you forget your password, ask the admin to reset it.', 'பாஸ்வேர்டு மறந்துட்டா அட்மின் கிட்ட கேளுங்க, புதுசா போட்டு தருவாங்க.', 'पासवर्ड भूल जाएँ तो एडमिन से बोलिए, वो नया बना देंगे।')),
+      h('label', {}, tr('Current password', 'இப்போ இருக்கிற பாஸ்வேர்டு', 'अभी वाला पासवर्ड'), pwBox(o)), h('label', {}, tr('New password (min 6 characters)', 'புது பாஸ்வேர்டு (குறைஞ்சது 6 எழுத்து)', 'नया पासवर्ड (कम से कम 6 अक्षर)'), pwBox(n1)),
+      h('label', {}, tr('Repeat new password', 'புது பாஸ்வேர்டு திரும்ப போடுங்க', 'नया पासवर्ड फिर से डालें'), pwBox(n2)), h('button', { class: 'pri', type: 'submit' }, tr('Change password', 'பாஸ்வேர்டு மாத்துங்க', 'पासवर्ड बदलें'))));
   }
 };
 
@@ -1344,11 +1384,12 @@ function monthCalendar(d) {
   const first = new Date(d.month + '-01T00:00:00'), lead = (first.getDay() + 6) % 7; // Monday first
   const cells = [...Array(lead).fill(null), ...d.days];
   const cls = { Delivered: 'ok', Paused: 'pause', Unavailable: 'out' };
+  const word = { Delivered: tr('Delivered', 'பால் வந்தது', 'दूध आया'), Paused: tr('Paused', 'நிறுத்தினது', 'रोका गया'), Unavailable: tr('Milk Unavailable', 'பால் இல்ல', 'दूध नहीं था') };
   return h('div', { class: 'cal noselect' },
-    h('div', { class: 'cal-grid' }, ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((w) => h('div', { class: 'cal-w' }, w)),
+    h('div', { class: 'cal-grid' }, WEEK().map((w) => h('div', { class: 'cal-w' }, w)),
       // dates pop in as a diagonal wave (row + column sets the delay); today's date keeps a gentle pulse
-      cells.map((x, i) => x ? h('div', { class: 'cal-d ' + (cls[x.st] || '') + (x.date === d.today ? ' today' : ''), style: `--w:${Math.floor(i / 7) + (i % 7)}`, title: x.st ? (x.st === 'Unavailable' ? 'Milk Unavailable' : x.st) : '' }, Number(x.date.slice(8))) : h('div', {}))),
-    h('div', { class: 'cal-key' }, h('span', { class: 'ok' }, 'Delivered'), h('span', { class: 'pause' }, 'Paused'), h('span', { class: 'out' }, 'Milk Unavailable')));
+      cells.map((x, i) => x ? h('div', { class: 'cal-d ' + (cls[x.st] || '') + (x.date === d.today ? ' today' : ''), style: `--w:${Math.floor(i / 7) + (i % 7)}`, title: x.st ? word[x.st] || x.st : '' }, Number(x.date.slice(8))) : h('div', {}))),
+    h('div', { class: 'cal-key' }, h('span', { class: 'ok' }, word.Delivered), h('span', { class: 'pause' }, word.Paused), h('span', { class: 'out' }, word.Unavailable)));
 }
 const NAV = [['dashboard', 'Dashboard'], ['delivery', 'Delivery'], ['notices', 'Notices'], ['daily', 'Daily Summary'], ['bills', 'Bills'], ['customers', 'Customers'], ['income', 'Income'], ['expenses', 'Expenses'], ['pnl', 'P&L'], ['cows', 'Cows'], ['yield', 'Cow Yield'], ['extras', 'Extras'], ['locations', 'Location Tracker'], ['settings', 'Settings']];
 // the admin menu in the order picked in Settings; a page missing from the saved order keeps its default place at the end
@@ -1403,6 +1444,8 @@ async function render() {
   $('#menu').hidden = !links.length; $('.month').hidden = !admin;
   $('#who').textContent = { admin: 'Admin', delivery: { AM: 'Morning delivery', PM: 'Evening delivery' }[S.user.shift] || 'Delivery', customer: S.user.cid }[role];
   document.body.classList.toggle('customer', role === 'customer');
+  document.documentElement.lang = langOn();
+  $('#logout').textContent = tr('Sign out', 'லாக் அவுட்', 'लॉग आउट');
   const v = $('#view'); v.innerHTML = '';
   v.append = (...kids) => Element.prototype.append.apply(v, kids.flat().filter((k) => k != null && k !== false)); // pages may pass null for "nothing"
   badgeP.then(([[badge, chgBadge], cowBadge]) => {

@@ -357,6 +357,10 @@ nav a.on .badge.cow{background:var(--cow);color:#fff}
 }
 .seg button{white-space:nowrap}
 body.customer .bar .seg{width:100%}
+/* customer tabs: longer Tamil / Hindi words wrap onto 2 lines inside their button instead of pushing the page off the screen */
+body.customer .seg{max-width:100%;box-sizing:border-box;gap:0}
+body.customer .seg button{flex:1 1 auto;min-width:0;white-space:normal;overflow-wrap:break-word;line-height:1.25;padding:6px 4px;text-align:center}
+body.customer:is(:lang(ta),:lang(hi)) .seg button{font-size:12px;padding:6px 3px}
 
 /* ---- print ---- */
 @media print{
