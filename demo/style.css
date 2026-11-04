@@ -604,3 +604,5 @@ body.map-open{overflow:hidden}
 .map-rec{padding:8px 14px;font-size:13px;font-weight:700;color:#b91c1c;background:#fef2f2;border-top:1px solid #fecaca}
 .map-recbtn{margin:8px 14px 0;width:calc(100% - 28px);justify-content:center;font-weight:700;color:#b91c1c;border-color:#fca5a5}
 .map-recbtn.on{background:#dc2626;color:#fff;border-color:#dc2626}
+.hm-piece{display:grid;gap:6px;border-top:1px solid var(--line);padding-top:6px}
+.hm-piece .map-recbtn{margin:0;width:100%;font-size:13px}
