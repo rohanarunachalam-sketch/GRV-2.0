@@ -1249,7 +1249,6 @@ async function openMap({ d, order, session }) {
   // two route lines: 'road' (road map, OSRM; straight dashed line until it loads) and 'learned' (the admin's recorded ride). A switch picks one; kept on this phone.
   const roadLy = Lf.layerGroup(), learnLy = Lf.layerGroup(), routeKm = { road: null, learned: null };
   const casing = (ll, color, ly) => { Lf.polyline(ll, { color: '#fff', weight: 8, opacity: .9 }).addTo(ly); Lf.polyline(ll, { color, weight: 5, opacity: .9 }).addTo(ly); }; // white edge shows on the satellite photo too
-  if (line.length > 1) Lf.polyline(line, { color: '#1c7a44', weight: 3, opacity: .55, dashArray: '6 8' }).addTo(roadLy);
   let mode = 'learned'; try { if (localStorage.getItem('grv.routeMode') === 'road') mode = 'road'; } catch {}
   const routeBtns = h('div', { class: 'map-route seg', hidden: true }, [['learned', '✋ Learned'], ['road', '🛣️ Road map']].map(([k, l]) => h('button', { 'data-k': k, onclick: () => { try { localStorage.setItem('grv.routeMode', k); } catch {} setMode(k); } }, l)));
   Lf.DomEvent.disableClickPropagation(routeBtns); box.append(routeBtns);
@@ -1258,9 +1257,9 @@ async function openMap({ d, order, session }) {
     const k = learnLy.getLayers().length ? 'learned' : 'road', recording = rec.watch != null;
     routeBtns.hidden = true;
     map.removeLayer(roadLy); map.removeLayer(learnLy);
-    if (!(recording && !rec.piece)) (k === 'road' ? roadLy : learnLy).addTo(map);
+    if (k === 'learned' && !(recording && !rec.piece)) learnLy.addTo(map); // the road-map line is never drawn — only the admin's recorded (blue) route
     for (const b of routeBtns.children) b.classList.toggle('on', b.dataset.k === k);
-    const km = routeKm[k]; kmPill.hidden = km == null; kmPill.textContent = `${k === 'road' ? '🛣️' : '✋'} ${km} km`; kmPill.title = k === 'road' ? 'Distance by road map' : 'Distance of the recorded ride';
+    const km = k === 'learned' ? routeKm.learned : null; kmPill.hidden = km == null; kmPill.textContent = `${k === 'road' ? '🛣️' : '✋'} ${km} km`; kmPill.title = k === 'road' ? 'Distance by road map' : 'Distance of the recorded ride';
   };
   let learned = null; // latest recorded route: { pts, km, pieces, status: { 'lat,lng': 'on' | 'rode' | 'road' | 'straight' } }
   const drawLearned = (l) => {
@@ -1284,8 +1283,8 @@ async function openMap({ d, order, session }) {
   };
   setMode(mode);
   if (line.length > 1) api('road', 'POST', { session, ids: order }).then((r) => {
-    if (!r.ok || !r.poly.length || !box.isConnected) { if (!r.ok) toast('Road route could not load — showing straight lines', true); return; }
-    roadLy.clearLayers(); casing(r.poly.map(decodePolyline), '#1c7a44', roadLy); routeKm.road = r.km; setMode(mode);
+    if (!r.ok || !box.isConnected) return;
+    routeKm.road = r.km; // fetched only so the road distances are saved for customers' times; not drawn
   }, () => {});
   reloadLearned();
 
