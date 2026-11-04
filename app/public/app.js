@@ -1182,17 +1182,21 @@ async function openMap({ d, order, session }) {
   shareBtn.onclick = () => { const on = !shareOn(); if (!on && !confirm('Stop sharing your live location?')) return; setShare(on); paintShare(); toast(on ? 'Your live location shows while a round is running (keep the app open)' : 'Stopped sharing'); };
   paintShare();
   const box = h('div', { class: 'map-box' }), kmPill = h('span', { class: 'map-km', hidden: true });
-  const close = () => { clearInterval(poll); removeEventListener('hashchange', close); map.remove(); ov.remove(); document.body.classList.remove('map-open'); };
+  const recInfo = h('div', { class: 'map-rec', hidden: true }), recBtn = h('button', { class: 'map-recbtn' }); // admin's Record route (wired up further down)
+  const close = (e) => {
+    if (rec.watch != null && !(e && e.type === 'hashchange') && !confirm('Recording is on. Close the map and pause it? Your ride so far is kept — tap Record route again to continue.')) return;
+    if (rec.watch != null) { stopGps(); saveDraft(); }
+    clearInterval(poll); removeEventListener('hashchange', close); map.remove(); ov.remove(); document.body.classList.remove('map-open'); };
   let follow = null;
   const ov = h('div', { class: 'map-ov', role: 'dialog', 'aria-label': 'Delivery map' },
     h('div', { class: 'map-top' }, h('b', {}, '🗺️ Map'), h('span', { class: 'shift-pill' }, session === 'AM' ? '🌅 Morning' : '🌇 Evening'), kmPill, h('span', { class: 'grow' }),
       h('button', { class: 'map-x', 'aria-label': 'Close map', onclick: () => close() }, '✕')),
-    box, status,
+    box, status, S.user.role === 'admin' ? recInfo : null,
     h('div', { class: 'map-acts' },
       h('button', { onclick: () => fitAll() }, '⤢ Show all'),
       h('button', { onclick: () => { const k = [...carts.keys()][0]; if (!k) return toast('No one is delivering right now', true); follow = k; map.setView(carts.get(k).m.getLatLng(), Math.max(map.getZoom(), 17)); toast('Following the cart — move the map to stop'); } }, '🐂 Follow cart'),
       h('button', { onclick: () => navigator.geolocation ? navigator.geolocation.getCurrentPosition((p) => { const ll = [p.coords.latitude, p.coords.longitude]; meDot.setLatLng(ll).addTo(map); map.setView(ll, Math.max(map.getZoom(), 17)); }, (e) => gpsHelp(e.code === 1 ? 'denied' : e.code === 2 ? 'off' : 'slow'), { enableHighAccuracy: true, timeout: 15000 }) : gpsHelp('none') }, '📍 Me')),
-    shareBtn);
+    S.user.role === 'admin' ? recBtn : null, shareBtn);
   document.body.append(ov); document.body.classList.add('map-open');
   addEventListener('hashchange', close);
 
@@ -1236,15 +1240,89 @@ async function openMap({ d, order, session }) {
   }
   for (const id of order) { const c = byId.get(id); if (has(c)) line.push([c.lat, c.lng]); }
   // straight dashed line first, then the real road route (OSRM) replaces it once it arrives; if it can't be had, the dashed line stays
-  const straight = line.length > 1 ? Lf.polyline(line, { color: '#1c7a44', weight: 3, opacity: .55, dashArray: '6 8' }).addTo(map) : null;
-  if (straight) api('road', 'POST', { session, ids: order }).then((r) => {
+  // two route lines: 'road' (road map, OSRM; straight dashed line until it loads) and 'learned' (the admin's recorded ride). A switch picks one; kept on this phone.
+  const roadLy = Lf.layerGroup(), learnLy = Lf.layerGroup(), routeKm = { road: null, learned: null };
+  const casing = (ll, color, ly) => { Lf.polyline(ll, { color: '#fff', weight: 8, opacity: .9 }).addTo(ly); Lf.polyline(ll, { color, weight: 5, opacity: .9 }).addTo(ly); }; // white edge shows on the satellite photo too
+  if (line.length > 1) Lf.polyline(line, { color: '#1c7a44', weight: 3, opacity: .55, dashArray: '6 8' }).addTo(roadLy);
+  let mode = 'learned'; try { if (localStorage.getItem('grv.routeMode') === 'road') mode = 'road'; } catch {}
+  const routeBtns = h('div', { class: 'map-route seg', hidden: true }, [['learned', '✋ Learned'], ['road', '🛣️ Road map']].map(([k, l]) => h('button', { 'data-k': k, onclick: () => { try { localStorage.setItem('grv.routeMode', k); } catch {} setMode(k); } }, l)));
+  Lf.DomEvent.disableClickPropagation(routeBtns); box.append(routeBtns);
+  const setMode = (want) => {
+    const k = want === 'learned' && !learnLy.getLayers().length ? 'road' : want;
+    if (want === 'learned' || want === 'road') mode = want; // remember the wish, so the learned line shows once it loads
+    routeBtns.hidden = !learnLy.getLayers().length;
+    (k === 'road' ? roadLy : learnLy).addTo(map); map.removeLayer(k === 'road' ? learnLy : roadLy);
+    for (const b of routeBtns.children) b.classList.toggle('on', b.dataset.k === k);
+    const km = routeKm[k]; kmPill.hidden = km == null; kmPill.textContent = `${k === 'road' ? '🛣️' : '✋'} ${km} km`; kmPill.title = k === 'road' ? 'Distance by road map' : 'Distance of the recorded ride';
+  };
+  const drawLearned = (l) => { learnLy.clearLayers(); if (l && l.pts && l.pts.length > 1) { casing(l.pts, '#1d4ed8', learnLy); routeKm.learned = l.km; } else routeKm.learned = null; };
+  setMode(mode);
+  if (line.length > 1) api('road', 'POST', { session, ids: order }).then((r) => {
     if (!r.ok || !r.poly.length || !box.isConnected) { if (!r.ok) toast('Road route could not load — showing straight lines', true); return; }
-    const road = r.poly.map(decodePolyline);
-    straight.remove();
-    Lf.polyline(road, { color: '#fff', weight: 8, opacity: .9 }).addTo(map); // white edge so the line shows on the satellite photo too
-    Lf.polyline(road, { color: '#1c7a44', weight: 5, opacity: .9 }).addTo(map);
-    kmPill.textContent = `🛣️ ${r.km} km`; kmPill.title = 'Distance by road'; kmPill.hidden = false;
+    roadLy.clearLayers(); casing(r.poly.map(decodePolyline), '#1c7a44', roadLy); routeKm.road = r.km; setMode(mode);
   }, () => {});
+  api('learned?session=' + session).then((l) => { if (!box.isConnected) return; drawLearned(l); setMode(mode); }, () => {});
+
+  // 🔴 Record route (admin only): ride the round once with the phone; the ride becomes the 'learned' route.
+  // The ride so far is kept on the phone, so a reload or a closed map can continue it.
+  const draftKey = 'grv.recDraft.' + session;
+  const rec = { watch: null, pts: [], t0: 0, line: null, wake: null, timer: null };
+  const recKm = () => { let k = 0; for (let i = 1; i < rec.pts.length; i++) k += kmBetween({ lat: rec.pts[i - 1][0], lng: rec.pts[i - 1][1] }, { lat: rec.pts[i][0], lng: rec.pts[i][1] }); return k; };
+  const saveDraft = () => { try { localStorage.setItem(draftKey, JSON.stringify({ pts: rec.pts, t0: rec.t0 })); } catch {} };
+  const dropDraft = () => { try { localStorage.removeItem(draftKey); } catch {} if (rec.line) rec.line.remove(); rec.line = null; rec.pts = []; };
+  const paintRec = () => {
+    const on = rec.watch != null;
+    recBtn.textContent = on ? '⏹ Stop & save route' : '🔴 Record route (ride the round once)'; recBtn.classList.toggle('on', on);
+    recInfo.hidden = !on; if (on) recInfo.textContent = `🔴 Recording · ${distText(recKm())} · ${dur((Date.now() - rec.t0) / 60000)} — keep the app open`;
+  };
+  const stopGps = () => {
+    if (rec.watch != null) navigator.geolocation.clearWatch(rec.watch); rec.watch = null; clearInterval(rec.timer);
+    if (rec.wake) { rec.wake.release().catch(() => {}); rec.wake = null; }
+  };
+  const startRec = (resume) => {
+    if (!window.isSecureContext) return gpsHelp('http'); if (!navigator.geolocation) return gpsHelp('none');
+    if (!resume) {
+      let draft = null; try { draft = JSON.parse(localStorage.getItem(draftKey) || 'null'); } catch {}
+      rec.pts = draft && draft.pts && draft.pts.length > 1 ? draft.pts : [];
+      if (rec.pts.length && confirm(`Continue the ride you recorded earlier (${distText(recKm())})? Cancel starts a new recording.`)) rec.t0 = draft.t0 || Date.now();
+      else { rec.pts = []; rec.t0 = Date.now(); }
+    }
+    if (rec.line) rec.line.remove();
+    rec.line = Lf.polyline(rec.pts, { color: '#dc2626', weight: 5, opacity: .9 }).addTo(map);
+    rec.watch = navigator.geolocation.watchPosition((p) => {
+      if (p.coords.accuracy > 35) return; // a weak fix would draw zig-zags
+      const pt = [+p.coords.latitude.toFixed(6), +p.coords.longitude.toFixed(6)], last = rec.pts[rec.pts.length - 1];
+      if (last && kmBetween({ lat: last[0], lng: last[1] }, { lat: pt[0], lng: pt[1] }) < 0.008) return; // keep a point every ~8 m
+      rec.pts.push(pt); rec.line.addLatLng(pt); if (rec.pts.length % 5 === 0) saveDraft(); paintRec();
+    }, (e) => { // a weak signal for a moment (trees, narrow lanes) must not end the ride — only a blocked permission stops it
+      if (e.code === 1) { stopGps(); saveDraft(); paintRec(); return gpsHelp('denied'); }
+      recInfo.textContent = `🔴 Recording · ${distText(recKm())} — ⏳ weak GPS, waiting for signal…`;
+    }, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
+    if (navigator.wakeLock) navigator.wakeLock.request('screen').then((w) => { rec.wake = w; }, () => {});
+    rec.timer = setInterval(paintRec, 15000);
+    paintRec(); if (!resume) toast('Recording — ride the round in your usual order');
+  };
+  const stopRec = () => {
+    stopGps(); saveDraft(); paintRec();
+    const km = recKm(), min = (Date.now() - rec.t0) / 60000;
+    const dlg = $('#dlg'); dlg.innerHTML = '';
+    const save = guard(async () => {
+      const r = await api('learned', 'PUT', { session, pts: rec.pts, minutes: min });
+      dlg.close();
+      const pts = rec.pts; dropDraft();
+      drawLearned({ pts, km: r.km }); try { localStorage.setItem('grv.routeMode', 'learned'); } catch {} setMode('learned');
+      toast(`Route saved — ${r.km} km, passes ${r.passed} marked places`);
+    });
+    const keep = h('button', { type: 'button', onclick: () => { dlg.close(); startRec(true); } }, 'Keep recording');
+    const discard = h('button', { type: 'button', onclick: () => { if (!confirm('Throw away this recording?')) return; dlg.close(); dropDraft(); } }, 'Discard');
+    if (rec.pts.length < 10 || km < 0.1) dlg.append(h('form', { class: 'form gps-help', method: 'dialog' }, h('h1', {}, 'Recording too short'), h('p', {}, 'Ride the whole round with the app open, then tap Stop & save.'), h('div', { class: 'acts' }, discard, keep)));
+    else dlg.append(h('form', { class: 'form gps-help', method: 'dialog' }, h('h1', {}, '✋ Save this route?'),
+      h('p', {}, `${distText(km)} · ${dur(min)}. It becomes the ${session === 'AM' ? 'morning' : 'evening'} route on the map for admin and delivery, and its distances are used for customers’ times.` + (routeKm.learned != null ? ' It replaces the route recorded before.' : '')),
+      h('div', { class: 'acts' }, discard, keep, h('button', { class: 'pri', type: 'button', onclick: save }, '✓ Save route'))));
+    dlg.showModal();
+  };
+  recBtn.onclick = () => (rec.watch != null ? stopRec() : startRec());
+  paintRec();
   const fitAll = () => { const all = [...pts, ...[...carts.values()].map((x) => x.m.getLatLng())]; if (all.length > 1) map.fitBounds(all, { padding: [40, 40], maxZoom: 17 }); else if (all.length) map.setView(all[0], 16); else map.setView([11.0, 78.5], 7); };
   // live carts: glide smoothly to each new position (like food-delivery apps) instead of jumping
   const carts = new Map();

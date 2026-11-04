@@ -253,7 +253,7 @@ async function nextId(table, prefix, pad) {
 const routes = [];
 const route = (method, pattern, fn) => routes.push({ method, re: new RegExp('^' + pattern + '$'), fn });
 // delivery staff may also mark houses, set the delivery order (Location Tracker) and start / pause / finish a delivery; the routes themselves stop them changing saved locations
-const deliveryExtra = (key) => key === 'GET /api/locations' || /^PUT \/api\/locations\/[^/]+$/.test(key) || key === 'GET /api/run' || /^(GET|PUT|DELETE) \/api\/live$/.test(key) || key === 'POST /api/road' || /^POST \/api\/run\/(start|pause|resume|end)$/.test(key);
+const deliveryExtra = (key) => key === 'GET /api/locations' || /^PUT \/api\/locations\/[^/]+$/.test(key) || key === 'GET /api/run' || /^(GET|PUT|DELETE) \/api\/live$/.test(key) || key === 'POST /api/road' || key === 'GET /api/learned' || /^POST \/api\/run\/(start|pause|resume|end)$/.test(key);
 const DELIVERY_ALLOWED = new Set(['GET /api/me', 'POST /api/logout', 'GET /api/route', 'PUT /api/delivery', 'PUT /api/delivery/unavailable', 'GET /api/notices']);
 const roleAllows = (role, key) => role === 'admin' || (role === 'delivery' && (DELIVERY_ALLOWED.has(key) || deliveryExtra(key))) ||
   (role === 'customer' && (['GET /api/me', 'POST /api/logout'].includes(key) || key.split(' ')[1].startsWith('/api/portal')));
@@ -452,11 +452,16 @@ async function fillRoadToday(date, session) {
 // minutes after the start until each customer's milk arrives, following the delivery order
 async function etaOffsets(date, session) {
   const { items, locs, farm } = await stopsToday(date, session), road = await roadLegs();
+  const marks = ((await getSetting('learned_' + session, null)) || {}).marks || {}; // km along the admin's recorded ride where it passes each saved point
   let prev = farm, t = 0, km = 0;
   const out = new Map();
   for (const it of items) {
     const l = locs.get(it.id);
-    if (l && prev) { const m = road.get(ptKey(prev) + '|' + ptKey(l)); const leg = m != null ? m / 1000 : kmBetween(prev, l) * ROAD_FACTOR; km += leg; t += leg / KMH * 60; }
+    if (l && prev) {
+      const a = marks[ptKey(prev)], b = marks[ptKey(l)], m = road.get(ptKey(prev) + '|' + ptKey(l));
+      const leg = a != null && b != null && b >= a ? b - a : m != null ? m / 1000 : kmBetween(prev, l) * ROAD_FACTOR;
+      km += leg; t += leg / KMH * 60;
+    }
     if (l) prev = l;
     out.set(it.id, { min: t, marked: !!l }); t += STOP_MIN;
   }
@@ -528,7 +533,7 @@ route('GET', '/api/locations', async () => {
 route('PUT', '/api/locations/farm', async ({ body, user }) => {
   const l = validLatLng(body);
   if (user.role !== 'admin') need(!(await getSetting('farm_location', null)), 'Only the admin can change the saved start location');
-  await setSetting('farm_location', { ...l, marked: new Date().toISOString() }); return { ok: true }; });
+  await setSetting('farm_location', { ...l, marked: new Date().toISOString() }); await learnPoint(l); return { ok: true }; });
 route('DELETE', '/api/locations/farm', async () => { await run("DELETE FROM settings WHERE key='farm_location'"); return { ok: true }; });
 route('PUT', '/api/locations/order', async ({ body, user }) => {
   need(['AM', 'PM'].includes(body.session), 'session must be AM or PM'); checkShift(user, body.session);
@@ -556,6 +561,7 @@ route('PUT', '/api/locations/([^/]+)', async ({ body, m, user }) => {
   if (user.role !== 'admin') need(!(await get('SELECT 1 x FROM customer_locations WHERE customer_id=?', [m[1]])), 'This house is already saved — only the admin can change it');
   const l = validLatLng(body);
   await run('INSERT OR REPLACE INTO customer_locations(customer_id,lat,lng,acc,marked) VALUES(?,?,?,?,?)', [m[1], l.lat, l.lng, l.acc, new Date().toISOString()]);
+  await learnPoint(l);
   return { ok: true };
 });
 // ---- live map (admin + delivery only, never customers): the phone of whoever is out delivering sends its GPS while a round is running
@@ -574,6 +580,40 @@ route('PUT', '/api/live', async ({ body, user }) => {
   await setSetting(liveKey(user), { ...l, heading: Number.isFinite(hd) ? Math.round(hd) : null, at: Date.now(), sessions: running });
   return { ok: true, running };
 });
+// ---- learned route: the admin records one real ride (🔴 Record route on the map); it is drawn on the map and its distances are used for the times
+const LEARN_NEAR_KM = 0.08; // the ride counts as passing a house when it comes within 80 m of the saved point
+const rideCum = (pts) => { const c = [0]; for (let i = 1; i < pts.length; i++) c.push(c[i - 1] + kmBetween({ lat: pts[i - 1][0], lng: pts[i - 1][1] }, { lat: pts[i][0], lng: pts[i][1] })); return c; };
+const passAt = (pts, cum, p) => { // km along the ride at its closest point to p (within 80 m), or null
+  let best = -1, bd = LEARN_NEAR_KM;
+  for (let i = 0; i < pts.length; i++) { const d = kmBetween(p, { lat: pts[i][0], lng: pts[i][1] }); if (d < bd) { bd = d; best = i; } }
+  return best < 0 ? null : Math.round(cum[best] * 1000) / 1000;
+};
+// a house marked or re-marked after the ride was recorded: find where the ride passes the new point (if it does)
+async function learnPoint(p) {
+  for (const s of ['AM', 'PM']) {
+    const l = await getSetting('learned_' + s, null); if (!l) continue;
+    const k = passAt(l.pts, rideCum(l.pts), p);
+    if (k == null) continue; // a house off the recorded roads: its stretches use the road map instead
+    l.marks = { ...(l.marks || {}), [ptKey(p)]: k }; await setSetting('learned_' + s, l);
+  }
+}
+route('GET', '/api/learned', async ({ q, user }) => {
+  need(['AM', 'PM'].includes(q.session), 'session must be AM or PM'); checkShift(user, q.session);
+  const l = await getSetting('learned_' + q.session, null);
+  return l ? { pts: l.pts, km: l.km, minutes: l.minutes, at: l.at, passed: Object.keys(l.marks || {}).length } : null;
+});
+route('PUT', '/api/learned', async ({ body }) => { // admin only (not in the delivery list)
+  need(['AM', 'PM'].includes(body.session), 'session must be AM or PM');
+  need(Array.isArray(body.pts) && body.pts.length >= 2 && body.pts.length <= 20000, 'The recording is too short');
+  const pts = body.pts.map((p) => { const v = validLatLng({ lat: p && p[0], lng: p && p[1] }); return [+v.lat.toFixed(6), +v.lng.toFixed(6)]; });
+  const cum = rideCum(pts), marks = {}, farm = await getSetting('farm_location', null);
+  // where along the ride each saved point (farm + every house) is passed, so a house-to-house distance is the km ridden between them
+  for (const p of [farm, ...(await all('SELECT lat, lng FROM customer_locations'))].filter(Boolean)) { const k = passAt(pts, cum, p); if (k != null) marks[ptKey(p)] = k; }
+  const km = Math.round(cum[cum.length - 1] * 10) / 10, minutes = Math.max(0, Math.round(Number(body.minutes) || 0));
+  await setSetting('learned_' + body.session, { pts, km, minutes, marks, at: new Date().toISOString() });
+  return { ok: true, km, passed: Object.keys(marks).length };
+});
+route('DELETE', '/api/learned', async ({ q }) => { need(['AM', 'PM'].includes(q.session), 'session must be AM or PM'); await run('DELETE FROM settings WHERE key=?', ['learned_' + q.session]); return { ok: true }; });
 // the road route for the map: farm → houses in the order given; saved, so it is only fetched again when the order or a location changes
 route('POST', '/api/road', async ({ body, user }) => {
   need(['AM', 'PM'].includes(body.session), 'session must be AM or PM'); checkShift(user, body.session);
