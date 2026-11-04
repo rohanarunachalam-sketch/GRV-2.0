@@ -1204,8 +1204,9 @@ pages.portal = async (v) => {
   };
   const again = () => { v.innerHTML = ''; pages.portal(v).catch((e) => v.append(h('p', { class: 'bad' }, e.message))); };
   if (isDiwali()) { v.append(diwaliPoster()); diwaliFireworks(); }
-  const tabs = h('div', { class: 'seg' }, [['bill', tr('My bill', 'என் பில்', 'मेरा बिल')], ['skip', tr('No milk', 'பால் வேண்டாம்', 'दूध नहीं चाहिए')], ['shop', tr('GRV Shop', 'GRV ஷாப்', 'GRV शॉप')], ['account', tr('Account', 'அக்கவுண்ட்', 'अकाउंट')]]
-    .map(([k, l]) => h('button', { class: P.tab === k ? 'on' : '', onclick: () => { P.tab = k; again(); } }, l)));
+  // big tabs with an icon over the word, so they are easy to spot even for someone who doesn't read well
+  const tabs = h('div', { class: 'seg ptabs', role: 'tablist' }, [['bill', '🧾', tr('My bill', 'என் பில்', 'मेरा बिल')], ['skip', '🚫', tr('No milk', 'பால் வேண்டாம்', 'दूध नहीं चाहिए')], ['shop', '🛒', tr('GRV Shop', 'GRV ஷாப்', 'GRV शॉप')], ['account', '👤', tr('Account', 'அக்கவுண்ட்', 'अकाउंट')]]
+    .map(([k, ic, l]) => h('button', { class: P.tab === k ? 'on' : '', role: 'tab', 'aria-selected': String(P.tab === k), onclick: () => { P.tab = k; again(); } }, h('span', { class: 'ic', 'aria-hidden': 'true' }, ic), h('span', { class: 'lb' }, l))));
   v.append(h('div', { class: 'who-card' }, h('div', { class: 'avatar' }, (d.customer.name || d.customer.id).trim()[0]?.toUpperCase() || '?'),
     h('div', {}, h('h1', {}, d.customer.name || tr('Welcome', 'வணக்கம்', 'नमस्ते')), h('div', { class: 'tag' }, tr('Customer ', 'கஸ்டமர் ', 'ग्राहक ') + d.customer.id))), d.needs_name ? nameForm(true) : null, etaCard(), h('div', { class: 'bar' }, tabs));
 
