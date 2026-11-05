@@ -483,6 +483,7 @@ pages.bill = async (v, arg) => {
     !all ? h('a', { href: waLink(list[0]), target: '_blank', rel: 'noopener' }, h('button', {}, 'WhatsApp')) : null,
     h('span', { class: 'tag' }, all ? `${list.length} bills for ${monthLabel(S.month)}` : '')));
   if (!list.length) v.append(h('p', { class: 'mute' }, 'No bills for this month.'));
+  if (!all && list.length) document.title = list[0].id; // Print / Save PDF saves as GRV001.pdf
   for (const b of list) v.append(invoice(b));
 };
 
@@ -1802,6 +1803,7 @@ function showLogin() {
 }
 
 async function render() {
+  document.title = 'GRV Dairy'; // a single bill page renames it to the customer ID, so "Save as PDF" is named e.g. GRV001.pdf
   if (!S.user) {
     try { S.user = await api('me'); } catch { return showLogin(); }
   }
